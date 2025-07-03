@@ -1,23 +1,58 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
-import os
-import shutil
-import re
-import ast
-from pathlib import Path
+from datetime import datetime
+import time
 
-# ======================
-# DATA CONFIGURATION
-# ======================
-DATA_FOLDER = "chai_snacks_data/"
-DATABASES = {
-    "orders": DATA_FOLDER + "orders.csv",
-    "menu": DATA_FOLDER + "menu.csv",
-    "customers": DATA_FOLDER + "customers.csv",
-    "credit": DATA_FOLDER + "credit_transactions.csv",
-    "inventory": DATA_FOLDER + "inventory.csv",
-    "food_items": DATA_FOLDER + "food_items.csv"
+# Configure page
+st.set_page_config(page_title="Food Order", layout="wide", page_icon="🍔")
+
+# Custom CSS for better styling
+st.markdown("""
+<style>
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+        border-radius: 5px;
+        padding: 10px 24px;
+        font-weight: bold;
+    }
+    .stSelectbox, .stTextInput {
+        margin-bottom: 15px;
+    }
+    .order-card {
+        border-left: 5px solid #4CAF50;
+        padding: 15px;
+        margin: 10px 0;
+        background-color: #f9f9f9;
+        border-radius: 5px;
+    }
+    .total-display {
+        font-size: 1.5em;
+        font-weight: bold;
+        color: #2E86C1;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# MENU CONFIGURATION
+MENU = {
+    "Momos": {
+        "Veg Half (6 pcs)": {"price": 80, "cost": 10},
+        "Veg Full (12 pcs)": {"price": 150, "cost": 20},
+        "Chicken Half (6 pcs)": {"price": 100, "cost": 17},
+        "Chicken Full (12 pcs)": {"price": 190, "cost": 34}
+    },
+    "Sandwich": {
+        "Veg Sandwich": {"price": 60, "cost": 15},
+        "Cheese Veg Sandwich": {"price": 80, "cost": 25},
+        "Chicken Sandwich": {"price": 100, "cost": 30}
+    },
+    "Maggi": {
+        "Plain Maggi": {"price": 40, "cost": 10},
+        "Veg Maggi": {"price": 60, "cost": 20},
+        "Cheese Maggi": {"price": 70, "cost": 25},
+        "Chicken Maggi": {"price": 90, "cost": 30}
+    }
 }
 
 TOPPINGS = {
@@ -27,472 +62,187 @@ TOPPINGS = {
     "Egg": 15
 }
 
-CUSTOMER_COLUMNS = [
-    "mobile", "name", "credit_balance", "total_spent",
-    "order_count", "first_order", "last_order", "loyalty_points"
-]
-
-DEFAULT_FOOD_ITEMS = {
-    "Masala Chai": {"price": 20, "category": "Beverage", "stock": 100},
-    "Ginger Tea": {"price": 20, "category": "Beverage", "stock": 100},
-    "Filter Coffee": {"price": 25, "category": "Beverage", "stock": 80},
-    "Samosa": {"price": 25, "category": "Snack", "stock": 50},
-    "Vada Pav": {"price": 30, "category": "Snack", "stock": 40},
-    "Sandwich": {"price": 60, "category": "Lunch", "stock": 30},
-    "Veg Thali": {"price": 120, "category": "Lunch", "stock": 20},
-    "Chicken Thali": {"price": 150, "category": "Lunch", "stock": 20},
-    "Gulab Jamun": {"price": 40, "category": "Dessert", "stock": 30}
-}
-
-# ======================
-# DATA MANAGEMENT
-# ======================
-def init_data_system():
-    if not os.path.exists(DATA_FOLDER):
-        os.makedirs(DATA_FOLDER)
-        os.makedirs(DATA_FOLDER + "backups/")
-
-    # Initialize food items database
-    if not os.path.exists(DATABASES["food_items"]):
-        food_df = pd.DataFrame.from_dict(DEFAULT_FOOD_ITEMS, orient='index').reset_index()
-        food_df = food_df.rename(columns={'index': 'item'})
-        food_df.to_csv(DATABASES["food_items"], index=False)
-
-    # Initialize menu database from food items
-    if not os.path.exists(DATABASES["menu"]):
-        food_df = pd.read_csv(DATABASES["food_items"])
-        menu_df = food_df[['item', 'price', 'category']]
-        menu_df.to_csv(DATABASES["menu"], index=False)
-
-    # Initialize other databases with proper columns
-    if not os.path.exists(DATABASES["orders"]):
-        pd.DataFrame(columns=[
-            "order_id", "mobile", "items", "total", 
-            "payment_method", "paid", "timestamp", "staff"
-        ]).to_csv(DATABASES["orders"], index=False)
-        
-    if not os.path.exists(DATABASES["customers"]):
-        pd.DataFrame(columns=CUSTOMER_COLUMNS).to_csv(DATABASES["customers"], index=False)
-        
-    if not os.path.exists(DATABASES["credit"]):
-        pd.DataFrame(columns=[
-            "mobile", "amount", "type", "timestamp", "staff"
-        ]).to_csv(DATABASES["credit"], index=False)
-
-def load_db(db_name):
-    try:
-        df = pd.read_csv(DATABASES[db_name])
-        # Convert string representations of lists to actual lists for orders
-        if db_name == "orders" and 'items' in df.columns:
-            df['items'] = df['items'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) and x.startswith('[') else [])
-        return df
-    except (FileNotFoundError, pd.errors.EmptyDataError):
-        return pd.DataFrame()
-
-def save_db(db_name, df):
-    # Convert lists to strings for storage
-    if db_name == "orders" and 'items' in df.columns:
-        df = df.copy()
-        df['items'] = df['items'].astype(str)
-    df.to_csv(DATABASES[db_name], index=False)
-
-def get_customer(mobile):
-    customers_df = load_db("customers")
-    if not customers_df.empty and str(mobile) in customers_df['mobile'].astype(str).values:
-        return customers_df[customers_df['mobile'].astype(str) == str(mobile)].iloc[0].to_dict()
-    return None
-
-def update_customer(mobile, name=None, amount=0, order_placed=False):
-    customers_df = load_db("customers")
-    mobile = str(mobile)  # Ensure mobile is string for consistency
-    
-    if not customers_df.empty and mobile in customers_df['mobile'].astype(str).values:
-        idx = customers_df[customers_df['mobile'].astype(str) == mobile].index[0]
-        
-        if order_placed:
-            customers_df.at[idx, 'order_count'] = customers_df.at[idx, 'order_count'] + 1
-            customers_df.at[idx, 'total_spent'] = customers_df.at[idx, 'total_spent'] + amount
-            customers_df.at[idx, 'last_order'] = datetime.now().strftime('%Y-%m-%d')
-            customers_df.at[idx, 'loyalty_points'] = customers_df.at[idx, 'loyalty_points'] + int(amount / 10)
-            
-            if pd.isna(customers_df.at[idx, 'first_order']) or customers_df.at[idx, 'first_order'] == '':
-                customers_df.at[idx, 'first_order'] = datetime.now().strftime('%Y-%m-%d')
-            
-        if name:
-            customers_df.at[idx, 'name'] = name
-    else:
-        new_customer = {
-            "mobile": mobile,
-            "name": name if name else "New Customer",
-            "credit_balance": 0,
-            "total_spent": amount if order_placed else 0,
-            "order_count": 1 if order_placed else 0,
-            "first_order": datetime.now().strftime('%Y-%m-%d') if order_placed else "",
-            "last_order": datetime.now().strftime('%Y-%m-%d') if order_placed else "",
-            "loyalty_points": int(amount / 10) if order_placed else 0
-        }
-        customers_df = pd.concat([customers_df, pd.DataFrame([new_customer])], ignore_index=True)
-    
-    save_db("customers", customers_df)
-
-def calculate_total(order_items):
-    total = 0
-    for item in order_items:
-        total += item['price'] * item['quantity']
-        for topping in item.get('toppings', []):
-            total += TOPPINGS.get(topping, 0) * item['quantity']
-    return total
-
-def create_backup():
-    backup_folder = DATA_FOLDER + "backups/" + datetime.now().strftime("%Y%m%d_%H%M%S") + "/"
-    os.makedirs(backup_folder, exist_ok=True)
-    for db_file in DATABASES.values():
-        if os.path.exists(db_file):
-            shutil.copy2(db_file, backup_folder)
-    return backup_folder
-
-def get_food_items():
-    try:
-        food_df = pd.read_csv(DATABASES["food_items"])
-        # Ensure stock is integer
-        if 'stock' in food_df.columns:
-            food_df['stock'] = food_df['stock'].fillna(0).astype(int)
-        return food_df
-    except (FileNotFoundError, pd.errors.EmptyDataError):
-        return pd.DataFrame()
-
-def add_food_item(name, price, category, stock):
-    food_df = get_food_items()
-    new_item = pd.DataFrame([{
-        "item": name,
-        "price": price,
-        "category": category,
-        "stock": stock
-    }])
-    food_df = pd.concat([food_df, new_item], ignore_index=True)
-    food_df.to_csv(DATABASES["food_items"], index=False)
-    # Update menu automatically
-    menu_df = food_df[['item', 'price', 'category']]
-    menu_df.to_csv(DATABASES["menu"], index=False)
-
-def update_stock(item_name, quantity_change):
-    food_df = get_food_items()
-    if not food_df.empty and item_name in food_df['item'].values:
-        idx = food_df[food_df['item'] == item_name].index[0]
-        current_stock = food_df.at[idx, 'stock']
-        new_stock = max(0, current_stock + quantity_change)  # Prevent negative stock
-        food_df.at[idx, 'stock'] = new_stock
-        food_df.to_csv(DATABASES["food_items"], index=False)
-        return True
-    return False
-
-# ======================
-# STREAMLIT APP
-# ======================
-st.set_page_config(page_title="Chai Snacks Lunch Hub", layout="wide")
-init_data_system()
-
 # Initialize session state
-if "user_role" not in st.session_state:
-    st.session_state.user_role = None
-    st.session_state.authenticated = False
-    st.session_state.username = None
+if "orders" not in st.session_state:
+    st.session_state.orders = []
+if "customer_name" not in st.session_state:
+    st.session_state.customer_name = ""
 
-if "current_order" not in st.session_state:
-    st.session_state.current_order = {
-        "items": [],
-        "customer_mobile": "",
-        "customer_name": "",
-        "payment_method": "Cash",
-        "paid": False
-    }
+# App Header
+st.title("🍔 Food Order System")
+st.markdown("---")
 
-# Authentication
-VALID_USERS = {
-    "staff": {
-        "password": "staff123",
-        "role": "Staff"
-    },
-    "admin": {
-        "password": "admin123",
-        "role": "Admin"
-    }
-}
+# Customer Section
+with st.expander("👤 Customer Information", expanded=True):
+    customer_name = st.text_input(
+        "Customer Name (required for credit)",
+        value=st.session_state.customer_name,
+        key="customer_input",
+        placeholder="Enter customer name"
+    )
+    st.session_state.customer_name = customer_name
 
-# Login Page
-if not st.session_state.authenticated:
-    st.title("Chai Snacks Lunch Hub - Login")
+# Menu Section
+with st.expander("📝 Menu Selection", expanded=True):
+    category = st.selectbox("Select Category", list(MENU.keys()))
     
-    login_tab, help_tab = st.tabs(["Login", "Help"])
-    
-    with login_tab:
-        with st.form("login_form"):
-            username = st.text_input("Username").strip().lower()
-            password = st.text_input("Password", type="password").strip()
-            
-            if st.form_submit_button("Login"):
-                if username in VALID_USERS:
-                    if password == VALID_USERS[username]["password"]:
-                        st.session_state.user_role = VALID_USERS[username]["role"]
-                        st.session_state.authenticated = True
-                        st.session_state.username = username
-                        st.rerun()
-                    else:
-                        st.error("❌ Incorrect password")
-                else:
-                    st.error("❌ Username not found")
-    
-    with help_tab:
-        st.markdown("### Login Help")
-        st.write("Use these test credentials:")
-        st.write("- **Staff Login**:")
-        st.code("Username: staff\nPassword: staff123")
-        st.write("- **Admin Login**:")
-        st.code("Username: admin\nPassword: admin123")
-    
-    st.stop()
-
-# Main App
-st.sidebar.title(f"Chai Snacks Lunch Hub")
-st.sidebar.subheader(f"Logged in as {st.session_state.username} ({st.session_state.user_role})")
-
-if st.sidebar.button("Logout"):
-    st.session_state.authenticated = False
-    st.session_state.user_role = None
-    st.session_state.username = None
-    st.rerun()
-
-# Tabs setup
-tabs = ["📝 Order", "👥 Customers"]
-if st.session_state.user_role == "Admin":
-    tabs.extend(["📦 Inventory", "📊 Reports", "💾 Backup"])
-
-selected_tab = st.tabs(tabs)
-
-# Order Tab
-with selected_tab[0]:
-    st.header("📝 New Order")
-    
-    # Payment Method Selection
-    payment_method = st.radio("Payment Method:", 
-                            ["Cash", "Credit"], 
-                            horizontal=True,
-                            key="payment_method")
-    
-    # Customer Information
-    if payment_method == "Credit":
-        mobile = st.text_input("Mobile Number (Required for Credit)", key="order_mobile")
-        mobile_valid = re.match(r'^[6-9]\d{9}$', mobile) if mobile else False
-        if mobile and not mobile_valid:
-            st.error("Please enter a valid 10-digit Indian mobile number")
-    else:
-        mobile = st.text_input("Mobile Number (Optional)", key="order_mobile")
-        mobile_valid = True if not mobile else re.match(r'^[6-9]\d{9}$', mobile)
-    
-    customer_name = st.text_input("Customer Name (Optional)", key="customer_name")
-    
-    # Menu Selection
-    st.subheader("Menu Items")
-    menu_df = load_db("menu")
-    food_df = get_food_items()
-    
-    # Merge menu with stock information
-    if not menu_df.empty and not food_df.empty:
-        menu_df = menu_df.merge(food_df[['item', 'stock']], on='item', how='left')
-    
-    order_items = []
-    if not menu_df.empty:
-        for _, item in menu_df.iterrows():
-            stock = item.get('stock', float('inf'))
-            with st.expander(f"{item['item']} - ₹{item['price']} ({stock if not pd.isna(stock) else '∞'} available)"):
-                max_quantity = min(10, stock) if not pd.isna(stock) and stock != float('inf') else 10
-                quantity = st.number_input(f"Quantity", 
-                                        min_value=0, 
-                                        max_value=max_quantity, 
-                                        key=f"qty_{item['item']}")
-                if quantity > 0:
-                    toppings = st.multiselect(
-                        f"Toppings for {item['item']}",
-                        options=list(TOPPINGS.keys()),
-                        key=f"top_{item['item']}"
-                    )
-                    order_items.append({
-                        'item': item['item'],
-                        'price': item['price'],
-                        'quantity': quantity,
-                        'toppings': toppings
-                    })
-    else:
-        st.warning("No menu items available")
-    
-    total_amount = calculate_total(order_items) if order_items else 0
-    st.subheader(f"Total Amount: ₹{total_amount}")
-    
-    # Credit payment validation
-    if payment_method == "Credit":
-        if not mobile:
-            st.warning("Mobile number required for credit payments")
-        elif not mobile_valid:
-            st.error("Valid mobile number required for credit payments")
-        else:
-            customer = get_customer(mobile)
-            if customer:
-                st.info(f"Customer: {customer.get('name', '')} | Balance: ₹{customer.get('credit_balance', 0)}")
-                if customer['credit_balance'] < total_amount:
-                    st.error("Insufficient credit balance")
-            else:
-                st.info("New customer will be registered for credit payments")
-    
-    if st.button("Place Order"):
-        if not order_items:
-            st.error("Please add at least one item to the order")
-        elif payment_method == "Credit":
-            if not mobile:
-                st.error("Mobile number is required for credit payments")
-            elif not mobile_valid:
-                st.error("Please enter a valid mobile number")
-            else:
-                customer = get_customer(mobile)
-                if customer and customer['credit_balance'] < total_amount:
-                    st.error("Customer has insufficient credit balance")
-                else:
-                    # Process credit order
-                    update_customer(
-                        mobile=mobile,
-                        name=customer_name,
-                        amount=total_amount,
-                        order_placed=True
-                    )
-                    
-                    # Update stock
-                    for item in order_items:
-                        update_stock(item['item'], -item['quantity'])
-                    
-                    new_order = {
-                        "order_id": datetime.now().strftime("%Y%m%d%H%M%S"),
-                        "mobile": mobile,
-                        "items": order_items,
-                        "total": total_amount,
-                        "payment_method": payment_method,
-                        "paid": False,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "staff": st.session_state.username
-                    }
-                    
-                    # Record credit transaction
-                    credit_df = load_db("credit")
-                    new_credit = pd.DataFrame([{
-                        "mobile": mobile,
-                        "amount": total_amount,
-                        "type": "purchase",
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "staff": st.session_state.username
-                    }])
-                    credit_df = pd.concat([credit_df, new_credit], ignore_index=True)
-                    save_db("credit", credit_df)
-                    
-                    # Save order
-                    orders_df = load_db("orders")
-                    orders_df = pd.concat([orders_df, pd.DataFrame([new_order])], ignore_index=True)
-                    save_db("orders", orders_df)
-                    
-                    # Update customer balance
-                    if customer:
-                        customers_df = load_db("customers")
-                        idx = customers_df[customers_df['mobile'].astype(str) == mobile].index[0]
-                        customers_df.at[idx, 'credit_balance'] -= total_amount
-                        save_db("customers", customers_df)
-                    
-                    st.success("Credit order placed successfully!")
-                    st.balloons()
-                    st.session_state.current_order = {
-                        "items": [],
-                        "customer_mobile": "",
-                        "customer_name": "",
-                        "payment_method": "Cash",
-                        "paid": False
-                    }
-                    st.rerun()
-        else:
-            # Process cash order
-            if mobile:  # Only update customer if mobile provided
-                update_customer(
-                    mobile=mobile,
-                    name=customer_name,
-                    amount=total_amount,
-                    order_placed=True
+    # Display menu items in columns
+    cols = st.columns(2)
+    for i, (item, details) in enumerate(MENU[category].items()):
+        with cols[i % 2]:
+            with st.container():
+                st.markdown(f"#### {item}")
+                st.markdown(f"**Price:** ₹{details['price']}")
+                qty = st.number_input(
+                    f"Quantity for {item}",
+                    min_value=0,
+                    step=1,
+                    key=f"qty_{item}",
+                    value=0
                 )
-            
-            # Update stock
-            for item in order_items:
-                update_stock(item['item'], -item['quantity'])
-            
-            new_order = {
-                "order_id": datetime.now().strftime("%Y%m%d%H%M%S"),
-                "mobile": mobile if mobile else "",
-                "items": order_items,
-                "total": total_amount,
-                "payment_method": payment_method,
-                "paid": True,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "staff": st.session_state.username
-            }
-            
-            orders_df = load_db("orders")
-            orders_df = pd.concat([orders_df, pd.DataFrame([new_order])], ignore_index=True)
-            save_db("orders", orders_df)
-            
-            st.success("Cash order placed successfully!")
-            st.balloons()
-            st.session_state.current_order = {
-                "items": [],
-                "customer_mobile": "",
-                "customer_name": "",
-                "payment_method": "Cash",
-                "paid": False
-            }
-            st.rerun()
+                
+                # Toppings selection
+                add_toppings = []
+                if category in ["Sandwich", "Maggi"] and qty > 0:
+                    st.markdown("**Add Toppings:**")
+                    for top_name, top_price in TOPPINGS.items():
+                        if st.checkbox(
+                            f"{top_name} (+₹{top_price})",
+                            key=f"top_{item}_{top_name}"
+                        ):
+                            add_toppings.append((top_name, top_price))
+                
+                if st.button(f"Add {item}", key=f"btn_{item}"):
+                    if qty > 0:
+                        topping_names = ", ".join([t[0] for t in add_toppings])
+                        total_price = (details["price"] + sum([t[1] for t in add_toppings])) * qty
+                        total_cost = details["cost"] * qty
+                        profit = total_price - total_cost
 
-# Customers Tab
-with selected_tab[1]:
-    st.header("👥 Customer Management")
+                        st.session_state.orders.append({
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "customer": customer_name if customer_name else "Walk-in",
+                            "category": category,
+                            "item": item,
+                            "qty": qty,
+                            "toppings": topping_names,
+                            "total_sale": total_price,
+                            "total_cost": total_cost,
+                            "profit": profit
+                        })
+                        st.success(f"Added {qty} × {item} to order!")
+                        time.sleep(0.5)
+                        st.rerun()
+
+# Order Summary Section
+st.markdown("---")
+st.subheader("🧾 Current Order Summary")
+
+if st.session_state.orders:
+    df = pd.DataFrame(st.session_state.orders)
     
-    search_mobile = st.text_input("Search by Mobile Number")
-    if search_mobile:
-        customer = get_customer(search_mobile)
-        if customer:
-            st.subheader(f"Customer: {customer.get('name', '')}")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"Mobile: {customer['mobile']}")
-                st.write(f"Total Orders: {customer['order_count']}")
-                st.write(f"First Order: {customer['first_order']}")
-            with col2:
-                st.write(f"Total Spent: ₹{customer['total_spent']}")
-                st.write(f"Loyalty Points: {customer['loyalty_points']}")
-                st.write(f"Last Order: {customer['last_order']}")
-            
-            st.subheader("Credit Management")
-            current_balance = customer['credit_balance']
-            st.write(f"Current Balance: ₹{current_balance}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                with st.form("payment_form"):
-                    payment_amount = st.number_input("Payment Amount", 
-                                                  min_value=0, 
-                                                  max_value=current_balance, 
-                                                  value=0)
-                    if st.form_submit_button("Record Payment") and payment_amount > 0:
-                        customers_df = load_db("customers")
-                        idx = customers_df[customers_df['mobile'].astype(str) == search_mobile].index[0]
-                        customers_df.at[idx, 'credit_balance'] -= payment_amount
-                        save_db("customers", customers_df)
-                        
-                        credit_df = load_db("credit")
-                        new_payment = pd.DataFrame([{
-                            "mobile": search_mobile,
-                            "amount": payment_amount,
-                            "type": "payment",
-                            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "staff": st.session_state
+    # Display order items in cards
+    for idx, order in enumerate(st.session_state.orders):
+        with st.container():
+            st.markdown(f"""
+            <div class="order-card">
+                <b>{order['item']}</b> × {order['qty']}<br>
+                {f"Toppings: {order['toppings']}" if order['toppings'] else ""}<br>
+                <b>Price:</b> ₹{order['total_sale']}
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Calculate totals
+    total_sale = df["total_sale"].sum()
+    total_profit = df["profit"].sum()
+    
+    st.markdown(f"""
+    <div class="total-display">
+        💵 Total: ₹{total_sale} | 💰 Profit: ₹{total_profit}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Payment options
+    payment_mode = st.radio(
+        "Payment Mode",
+        ["Cash", "Credit"],
+        horizontal=True,
+        index=0
+    )
+    
+    # Submit order
+    if st.button("✅ Submit Order", type="primary"):
+        if payment_mode == "Credit" and not customer_name:
+            st.error("Customer name is required for credit orders!")
+        else:
+            # Save to orders file
+            try:
+                df.to_csv("orders.csv", index=False, mode='a', header=not pd.io.common.file_exists("orders.csv"))
+                
+                # Save to credit log if credit payment
+                if payment_mode == "Credit" and customer_name:
+                    credit_df = df[["timestamp", "customer", "total_sale"]].rename(columns={"total_sale": "amount"})
+                    credit_df.to_csv("credit_log.csv", index=False, mode='a', header=not pd.io.common.file_exists("credit_log.csv"))
+                    st.warning(f"₹{total_sale} added to credit for {customer_name}")
+                
+                st.success("Order submitted successfully!")
+                st.balloons()
+                st.session_state.orders = []
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error saving order: {str(e)}")
+    
+    # Clear order button
+    if st.button("🗑️ Clear Order"):
+        st.session_state.orders = []
+        st.rerun()
+else:
+    st.info("No items in current order. Add items from the menu above.")
+
+# Admin Section
+with st.sidebar:
+    st.header("🔐 Admin Panel")
+    admin_pass = st.text_input("Admin Password", type="password")
+    
+    if admin_pass == "admin123":
+        st.success("Admin access granted")
+        
+        if st.button("📊 View Today's Orders"):
+            try:
+                df_all = pd.read_csv("orders.csv")
+                df_all["timestamp"] = pd.to_datetime(df_all["timestamp"])
+                df_all["date"] = df_all["timestamp"].dt.date
+                today = datetime.now().date()
+                df_today = df_all[df_all["date"] == today]
+                
+                if not df_today.empty:
+                    st.dataframe(
+                        df_today[["timestamp", "customer", "category", "item", "qty", "toppings", "total_sale", "profit"]],
+                        use_container_width=True
+                    )
+                    st.markdown(f"""
+                    **Today's Summary**  
+                    💵 Total Sales: ₹{df_today['total_sale'].sum()}  
+                    💰 Total Profit: ₹{df_today['profit'].sum()}  
+                    👥 Customers: {df_today['customer'].nunique()}
+                    """)
+                else:
+                    st.info("No orders found for today.")
+            except:
+                st.error("No orders file found or error reading data.")
+        
+        if st.button("👥 View Credit Balances"):
+            try:
+                credit_df = pd.read_csv("credit_log.csv")
+                if not credit_df.empty:
+                    balance_df = credit_df.groupby("customer")["amount"].sum().reset_index()
+                    balance_df = balance_df.rename(columns={"amount": "Outstanding Balance (₹)"})
+                    st.dataframe(balance_df, use_container_width=True)
+                    st.markdown(f"**Total Outstanding:** ₹{balance_df['Outstanding Balance (₹)'].sum()}")
+                else:
+                    st.info("No credit data found.")
+            except:
+                st.error("No credit log file found or error reading data.")
+    elif admin_pass:
+        st.error("Incorrect password")
