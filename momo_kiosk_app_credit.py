@@ -1,79 +1,62 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 from datetime import datetime, timedelta
 import time
 import hashlib
 import shutil
 import os
 from pathlib import Path
-import ast  # For safely evaluating strings containing Python literals
+import ast
+import csv
 
-# Database Configuration
-DB_FILE = "food_orders.db"
+# CSV File Configuration
+ORDERS_FILE = "orders.csv"
+CUSTOMERS_FILE = "customers.csv"
+MENU_FILE = "menu.csv"
+USERS_FILE = "users.csv"
 BACKUP_DIR = "backups/"
 
-# Initialize database
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+# Initialize CSV files
+def init_files():
+    os.makedirs(BACKUP_DIR, exist_ok=True)
     
-    # Create tables
-    c.execute('''CREATE TABLE IF NOT EXISTS orders
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT,
-                  customer TEXT,
-                  items TEXT,
-                  total REAL,
-                  payment_mode TEXT,
-                  status TEXT,
-                  staff TEXT)''')
+    # Create files with headers if they don't exist
+    files = {
+        ORDERS_FILE: ['id', 'timestamp', 'customer', 'items', 'total', 'payment_mode', 'status', 'staff'],
+        CUSTOMERS_FILE: ['id', 'name', 'phone', 'credit_balance', 'total_orders', 'total_spent'],
+        MENU_FILE: ['id', 'category', 'item', 'price', 'cost', 'stock'],
+        USERS_FILE: ['id', 'username', 'password', 'role']
+    }
     
-    c.execute('''CREATE TABLE IF NOT EXISTS customers
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT UNIQUE,
-                  phone TEXT,
-                  credit_balance REAL DEFAULT 0,
-                  total_orders INTEGER DEFAULT 0,
-                  total_spent REAL DEFAULT 0)''')
+    for file, headers in files.items():
+        if not os.path.exists(file):
+            with open(file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
     
-    c.execute('''CREATE TABLE IF NOT EXISTS menu
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  category TEXT,
-                  item TEXT UNIQUE,
-                  price REAL,
-                  cost REAL,
-                  stock INTEGER)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT UNIQUE,
-                  password TEXT,
-                  role TEXT)''')
-    
-    # Insert default admin if not exists
-    c.execute("SELECT 1 FROM users WHERE username='admin'")
-    if not c.fetchone():
-        c.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
-                 ("admin", hash_password("admin123"), "Admin"))
-    
-    conn.commit()
-    return conn
+    # Add default admin if not exists
+    users = pd.read_csv(USERS_FILE)
+    if 'admin' not in users['username'].values:
+        new_admin = pd.DataFrame([{
+            'id': len(users) + 1,
+            'username': 'admin',
+            'password': hash_password('admin123'),
+            'role': 'Admin'
+        }])
+        new_admin.to_csv(USERS_FILE, mode='a', header=False, index=False)
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def authenticate(username, password):
-    c = conn.cursor()
-    c.execute("SELECT password, role FROM users WHERE username = ?", (username,))
-    result = c.fetchone()
-    if result and result[0] == hash_password(password):
-        return result[1]  # Return role
+    users = pd.read_csv(USERS_FILE)
+    user = users[users['username'] == username]
+    if not user.empty and user.iloc[0]['password'] == hash_password(password):
+        return user.iloc[0]['role']
     return None
 
-# Initialize app
-conn = init_db()
-os.makedirs(BACKUP_DIR, exist_ok=True)
+# Initialize data files
+init_files()
 
 # Session state
 if 'current_order' not in st.session_state:
@@ -103,6 +86,23 @@ if not st.session_state.current_user:
                 st.error("Invalid credentials")
     st.stop()
 
+# Helper functions for CSV operations
+def append_to_csv(file, data):
+    df = pd.DataFrame([data])
+    df.to_csv(file, mode='a', header=False, index=False)
+
+def update_csv(file, data, id_col='id'):
+    df = pd.read_csv(file)
+    if isinstance(data, dict):
+        data = [data]
+    update_df = pd.DataFrame(data)
+    df.update(update_df.set_index(id_col))
+    df.to_csv(file, index=False)
+
+def get_next_id(file):
+    df = pd.read_csv(file)
+    return df['id'].max() + 1 if not df.empty else 1
+
 # ======================
 # TAB CONTENT FUNCTIONS
 # ======================
@@ -119,7 +119,8 @@ def order_tab():
     st.session_state.customer_name = customer_name
     
     # Menu Selection
-    menu_df = pd.read_sql("SELECT * FROM menu WHERE stock > 0", conn)
+    menu_df = pd.read_csv(MENU_FILE)
+    menu_df = menu_df[menu_df['stock'] > 0]
     categories = menu_df['category'].unique()
     
     category = st.selectbox("Select Category", categories)
@@ -144,9 +145,8 @@ def order_tab():
                 st.session_state.current_order.append(order_item)
                 
                 # Update stock
-                conn.execute("UPDATE menu SET stock = stock - ? WHERE item = ?", 
-                           (qty, item['item']))
-                conn.commit()
+                menu_df.loc[menu_df['item'] == item['item'], 'stock'] -= qty
+                menu_df.to_csv(MENU_FILE, index=False)
                 
                 st.success(f"Added {qty} × {item['item']}")
                 time.sleep(0.5)
@@ -166,6 +166,7 @@ def order_tab():
         if st.button("Submit Order"):
             # Save order
             order_data = {
+                "id": get_next_id(ORDERS_FILE),
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "customer": customer_name,
                 "items": str(st.session_state.current_order),
@@ -175,23 +176,26 @@ def order_tab():
                 "staff": st.session_state.current_user
             }
             
-            if payment_mode == "Credit" and customer_name:
-                # Update customer credit
-                conn.execute("""
-                    INSERT OR IGNORE INTO customers (name) VALUES (?)
-                """, (customer_name,))
-                
-                conn.execute("""
-                    UPDATE customers 
-                    SET credit_balance = credit_balance + ?,
-                        total_orders = total_orders + 1,
-                        total_spent = total_spent + ?
-                    WHERE name = ?
-                """, (total, total, customer_name))
+            append_to_csv(ORDERS_FILE, order_data)
             
-            # Save order
-            order_df = pd.DataFrame([order_data])
-            order_df.to_sql('orders', conn, if_exists='append', index=False)
+            if payment_mode == "Credit" and customer_name:
+                # Update customer data
+                customers_df = pd.read_csv(CUSTOMERS_FILE)
+                if customer_name not in customers_df['name'].values:
+                    new_customer = {
+                        "id": get_next_id(CUSTOMERS_FILE),
+                        "name": customer_name,
+                        "phone": "",
+                        "credit_balance": total,
+                        "total_orders": 1,
+                        "total_spent": total
+                    }
+                    append_to_csv(CUSTOMERS_FILE, new_customer)
+                else:
+                    customers_df.loc[customers_df['name'] == customer_name, 'credit_balance'] += total
+                    customers_df.loc[customers_df['name'] == customer_name, 'total_orders'] += 1
+                    customers_df.loc[customers_df['name'] == customer_name, 'total_spent'] += total
+                    customers_df.to_csv(CUSTOMERS_FILE, index=False)
             
             st.success("Order submitted successfully!")
             st.session_state.current_order = []
@@ -204,7 +208,7 @@ def customers_tab():
     tab1, tab2 = st.tabs(["View Customers", "Add/Edit Customer"])
     
     with tab1:
-        customers = pd.read_sql("SELECT * FROM customers", conn)
+        customers = pd.read_csv(CUSTOMERS_FILE)
         if not customers.empty:
             st.dataframe(customers)
         else:
@@ -217,26 +221,38 @@ def customers_tab():
             credit = st.number_input("Credit Balance", min_value=0.0, value=0.0)
             
             if st.form_submit_button("Save Customer"):
-                conn.execute("""
-                    INSERT OR REPLACE INTO customers 
-                    (name, phone, credit_balance) 
-                    VALUES (?, ?, ?)
-                """, (name, phone, credit))
-                conn.commit()
+                customers_df = pd.read_csv(CUSTOMERS_FILE)
+                
+                if name in customers_df['name'].values:
+                    # Update existing customer
+                    customers_df.loc[customers_df['name'] == name, ['phone', 'credit_balance']] = phone, credit
+                else:
+                    # Add new customer
+                    new_customer = {
+                        "id": get_next_id(CUSTOMERS_FILE),
+                        "name": name,
+                        "phone": phone,
+                        "credit_balance": credit,
+                        "total_orders": 0,
+                        "total_spent": 0
+                    }
+                    customers_df = pd.concat([customers_df, pd.DataFrame([new_customer])], ignore_index=True)
+                
+                customers_df.to_csv(CUSTOMERS_FILE, index=False)
                 st.success("Customer saved successfully!")
                 st.rerun()
 
 def inventory_tab():
     st.header("Inventory Management")
     
-    menu_items = pd.read_sql("SELECT * FROM menu", conn)
+    menu_df = pd.read_csv(MENU_FILE)
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Current Inventory")
         edited_items = st.data_editor(
-            menu_items,
+            menu_df,
             column_config={
                 "stock": st.column_config.NumberColumn("Stock", min_value=0)
             },
@@ -244,7 +260,7 @@ def inventory_tab():
         )
         
         if st.button("Update Inventory"):
-            edited_items.to_sql('menu', conn, if_exists='replace', index=False)
+            edited_items.to_csv(MENU_FILE, index=False)
             st.success("Inventory updated!")
             st.rerun()
     
@@ -258,12 +274,15 @@ def inventory_tab():
             stock = st.number_input("Initial Stock", min_value=0)
             
             if st.form_submit_button("Add Item"):
-                conn.execute("""
-                    INSERT INTO menu 
-                    (category, item, price, cost, stock) 
-                    VALUES (?, ?, ?, ?, ?)
-                """, (category, item, price, cost, stock))
-                conn.commit()
+                new_item = {
+                    "id": get_next_id(MENU_FILE),
+                    "category": category,
+                    "item": item,
+                    "price": price,
+                    "cost": cost,
+                    "stock": stock
+                }
+                append_to_csv(MENU_FILE, new_item)
                 st.success("Item added to menu!")
                 st.rerun()
 
@@ -277,9 +296,9 @@ def manage_tab():
     tab1, tab2 = st.tabs(["View Staff", "Add Staff"])
     
     with tab1:
-        staff_df = pd.read_sql("SELECT id, username, role FROM users", conn)
+        staff_df = pd.read_csv(USERS_FILE)
         if not staff_df.empty:
-            st.dataframe(staff_df)
+            st.dataframe(staff_df[['id', 'username', 'role']])
             
             # Delete staff option
             staff_to_delete = st.selectbox(
@@ -289,8 +308,8 @@ def manage_tab():
             )
             
             if st.button("Remove Staff") and staff_to_delete:
-                conn.execute("DELETE FROM users WHERE username = ?", (staff_to_delete,))
-                conn.commit()
+                staff_df = staff_df[staff_df['username'] != staff_to_delete]
+                staff_df.to_csv(USERS_FILE, index=False)
                 st.success(f"Staff {staff_to_delete} removed successfully!")
                 st.rerun()
         else:
@@ -303,15 +322,19 @@ def manage_tab():
             role = st.selectbox("Role", ["Staff", "Admin"])
             
             if st.form_submit_button("Create Staff Account"):
-                try:
-                    conn.execute(
-                        "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                        (username, hash_password(password), role)
-                    conn.commit()
+                users_df = pd.read_csv(USERS_FILE)
+                if username in users_df['username'].values:
+                    st.error("Username already exists")
+                else:
+                    new_user = {
+                        "id": get_next_id(USERS_FILE),
+                        "username": username,
+                        "password": hash_password(password),
+                        "role": role
+                    }
+                    append_to_csv(USERS_FILE, new_user)
                     st.success("Staff account created successfully!")
                     st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Username already exists")
 
 def process_orders_data(orders_df):
     """Process orders data to extract item-level details"""
@@ -343,18 +366,16 @@ def reports_tab():
         end_date = st.date_input("End Date", datetime.now())
     
     # Get orders within date range
-    query = f"""
-        SELECT * FROM orders 
-        WHERE date(timestamp) BETWEEN '{start_date}' AND '{end_date}'
-    """
-    orders_df = pd.read_sql(query, conn)
+    orders_df = pd.read_csv(ORDERS_FILE)
+    orders_df['timestamp'] = pd.to_datetime(orders_df['timestamp'])
+    orders_df = orders_df[(orders_df['timestamp'].dt.date >= start_date) & 
+                         (orders_df['timestamp'].dt.date <= end_date)]
     
     if orders_df.empty:
         st.info("No orders found in selected date range")
         return
     
     # Process timestamps
-    orders_df['timestamp'] = pd.to_datetime(orders_df['timestamp'])
     orders_df['date'] = orders_df['timestamp'].dt.date
     orders_df['week'] = orders_df['timestamp'].dt.strftime('%Y-%U')
     orders_df['month'] = orders_df['timestamp'].dt.strftime('%Y-%m')
@@ -468,13 +489,28 @@ def backup_tab():
     st.header("System Backup")
     
     if st.button("Create Backup"):
-        backup_file = f"{BACKUP_DIR}backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        shutil.copy2(DB_FILE, backup_file)
-        st.success(f"Backup created: {backup_file}")
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        
+        for file in [ORDERS_FILE, CUSTOMERS_FILE, MENU_FILE, USERS_FILE]:
+            shutil.copy2(file, f"{BACKUP_DIR}{timestamp}_{file}")
+        
+        st.success(f"Backup created with timestamp: {timestamp}")
         st.rerun()
     
     st.subheader("Available Backups")
-    backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith('.db')], reverse=True)
+    backups = []
+    if os.path.exists(BACKUP_DIR):
+        # Group files by timestamp
+        backup_groups = {}
+        for file in os.listdir(BACKUP_DIR):
+            if file.endswith('.csv'):
+                timestamp = file.split('_')[0]
+                if timestamp not in backup_groups:
+                    backup_groups[timestamp] = []
+                backup_groups[timestamp].append(file)
+        
+        backups = sorted(backup_groups.keys(), reverse=True)
     
     if backups:
         selected = st.selectbox("Select backup", backups)
@@ -482,15 +518,15 @@ def backup_tab():
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Restore Backup"):
-                shutil.copy2(f"{BACKUP_DIR}{selected}", DB_FILE)
+                for file in backup_groups[selected]:
+                    shutil.copy2(f"{BACKUP_DIR}{file}", file.split('_', 1)[1])
                 st.success("Database restored! Please refresh the page.")
         with col2:
             if st.button("Delete Backup"):
-                os.remove(f"{BACKUP_DIR}{selected}")
+                for file in backup_groups[selected]:
+                    os.remove(f"{BACKUP_DIR}{file}")
                 st.success("Backup deleted!")
                 st.rerun()
-        
-        st.write(f"Selected: {selected}")
     else:
         st.info("No backups available")
 
