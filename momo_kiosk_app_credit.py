@@ -83,7 +83,7 @@ if "authenticated" not in st.session_state:
 # LOGIN SIDEBAR
 # ======================
 with st.sidebar:
-    st.title("🔐 Login")
+    st.title("Login")
     if not st.session_state.authenticated:
         role = st.selectbox("Select Role", ["Admin", "Staff"])
         password = st.text_input("Password", type="password")
@@ -106,39 +106,39 @@ with st.sidebar:
 # TABS & FEATURES
 # ======================
 if st.session_state.authenticated:
-    tabs = ["📝 Order", "👥 Customers"]
+    tabs = ["Order", "Customers"]
     if st.session_state.user_role == "Admin":
-        tabs += ["📦 Inventory", "📊 Reports", "💾 Backup"]
+        tabs += ["Inventory", "Reports", "Backup"]
 
     selected_tab = st.tabs(tabs)
 
     # Order Tab (Placeholder)
     with selected_tab[0]:
-        st.header("📝 Order Placement")
+        st.header("Order Placement")
         st.success("Order placement UI will be here including cart, payment, and confirmation")
 
     # Customers Tab (Placeholder)
     with selected_tab[1]:
-        st.header("👥 Customer Management")
+        st.header("Customer Management")
         st.success("Add/view customer, manage credit, and loyalty points")
 
     # Admin Tabs
     if st.session_state.user_role == "Admin":
         # Inventory
         with selected_tab[2]:
-            st.header("📦 Inventory Management")
+            st.header("Inventory Management")
             inventory_df = load_db("inventory")
             st.dataframe(inventory_df)
             st.info("Inventory features (add stock, alerts) will be here")
 
         # Reports
         with selected_tab[3]:
-            st.header("📊 Sales Reports")
+            st.header("Sales Reports")
             st.info("Sales analytics and charts will be displayed here")
 
         # Backup
         with selected_tab[4]:
-            st.header("💾 Data Backup")
+            st.header("Data Backup")
             if st.button("Create Backup Now"):
                 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
                 backup_dir = os.path.join(BACKUP_FOLDER, timestamp)
@@ -148,12 +148,11 @@ if st.session_state.authenticated:
                         shutil.copy2(path, os.path.join(backup_dir, os.path.basename(path)))
                 st.success(f"Backup created in folder: {backup_dir}")
 else:
-    st.warning("🔐 Please log in using the sidebar to use the app.")
+    st.warning("Please log in using the sidebar to use the app.")
 
 
-✅ Your Food Hub app code has been fully fixed and generated.
-
-📄 File Ready To Use
+Your Food Hub app code has been fully fixed and generated.
+File Ready To Use
 
 You can now copy the full code from your editor, save it as food_hub_app.py, and run it using:
 
