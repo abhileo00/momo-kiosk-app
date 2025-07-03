@@ -4,6 +4,7 @@ from datetime import datetime, date
 import os
 import shutil
 import re
+import ast
 
 # ======================
 # DATA CONFIGURATION
@@ -30,7 +31,6 @@ CUSTOMER_COLUMNS = [
     "order_count", "first_order", "last_order", "loyalty_points"
 ]
 
-# Default food items with categories
 DEFAULT_FOOD_ITEMS = {
     "Masala Chai": {"price": 20, "category": "Beverage", "stock": 100},
     "Ginger Tea": {"price": 20, "category": "Beverage", "stock": 100},
@@ -471,3 +471,36 @@ with selected_tab[1]:
                         customers_df = load_db("customers")
                         idx = customers_df[customers_df['mobile'] == search_mobile].index[0]
                         customers_df.at[idx, 'credit_balance'] += credit_amount
+                        save_db("customers", customers_df)
+                        
+                        credit_df = load_db("credit")
+                        credit_df = pd.concat([credit_df, pd.DataFrame([{
+                            "mobile": search_mobile,
+                            "amount": credit_amount,
+                            "type": "credit",
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "staff": st.session_state.username
+                        }])], ignore_index=True)
+                        save_db("credit", credit_df)
+                        st.success("Credit added!")
+                        st.rerun()
+        else:
+            st.warning("Customer not found")
+
+# Admin-only tabs
+if st.session_state.user_role == "Admin":
+    with selected_tab[2]:  # Inventory
+        st.header("📦 Inventory Management")
+        
+        tab1, tab2 = st.tabs(["View Inventory", "Add New Item"])
+        
+        with tab1:
+            st.subheader("Current Food Items")
+            food_df = get_food_items()
+            if not food_df.empty:
+                st.dataframe(food_df)
+                
+                # Stock management
+                st.subheader("Update Stock")
+                selected_item = st.selectbox("Select item to update", food_df['item'])
+                current_stock = int(food_df[food_df['item'] == selec
