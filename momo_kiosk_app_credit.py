@@ -83,7 +83,7 @@ class Database:
             # Insert default admin if not exists
             c.execute("SELECT 1 FROM users WHERE username='admin'")
             if not c.fetchone():
-                hashed_pw = hash_password("admin123")
+                hashed_pw = pbkdf2_sha256.hash("admin123")
                 c.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
                          ("admin", hashed_pw, "Admin"))
             
@@ -97,6 +97,7 @@ class Database:
             return conn
         except sqlite3.Error as e:
             logger.error(f"Database connection error: {e}")
+            st.error(f"Database connection failed: {str(e)}")
             raise
     
     def execute_query(self, query: str, params: Tuple = (), commit: bool = False) -> Optional[sqlite3.Cursor]:
@@ -189,6 +190,9 @@ def register_customer(name: str, phone: str, credit_limit: float = 0) -> bool:
     except sqlite3.IntegrityError:
         st.error("Customer with this phone number already exists")
         return False
+    except sqlite3.Error as e:
+        st.error(f"Failed to register customer: {str(e)}")
+        return False
 
 def update_customer_credit(customer_id: int, amount: float, transaction_type: str, description: str) -> bool:
     """Update customer credit ledger"""
@@ -224,6 +228,7 @@ def update_customer_credit(customer_id: int, amount: float, transaction_type: st
         return True
     except sqlite3.Error as e:
         logger.error(f"Credit update failed: {e}")
+        st.error(f"Failed to update credit: {str(e)}")
         return False
 
 def get_customer_by_phone(phone: str) -> Optional[Dict]:
@@ -298,6 +303,7 @@ def submit_order(customer_id: Optional[int], items: List[Dict], total: float, pa
         return True
     except sqlite3.Error as e:
         logger.error(f"Order submission failed: {e}")
+        st.error(f"Failed to submit order: {str(e)}")
         return False
 
 # UI Components
@@ -537,10 +543,4 @@ def inventory_tab() -> None:
                             """INSERT INTO menu 
                                (category, item, price, cost, stock) 
                                VALUES (?, ?, ?, ?, ?)""",
-                            (category, item.strip(), price, cost, stock),
-                            commit=True
-                        )
-                        st.success("Item added to menu!")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-            
+         
