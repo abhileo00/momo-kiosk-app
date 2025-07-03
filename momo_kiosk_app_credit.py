@@ -503,4 +503,4 @@ if st.session_state.user_role == "Admin":
                 # Stock management
                 st.subheader("Update Stock")
                 selected_item = st.selectbox("Select item to update", food_df['item'])
-                current_stock = int(food_df[food_df['item'] == selec
+                current_stock = int(food_df.loc[food_df['item'] == s
