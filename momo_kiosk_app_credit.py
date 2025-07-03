@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import hashlib
 import shutil
 import os
 from pathlib import Path
+import ast  # For safely evaluating strings containing Python literals
 
 # Database Configuration
 DB_FILE = "food_orders.db"
@@ -266,39 +267,202 @@ def inventory_tab():
                 st.success("Item added to menu!")
                 st.rerun()
 
+def manage_tab():
+    st.header("Staff Account Management")
+    
+    if st.session_state.user_role != "Admin":
+        st.warning("Only administrators can access this page")
+        return
+    
+    tab1, tab2 = st.tabs(["View Staff", "Add Staff"])
+    
+    with tab1:
+        staff_df = pd.read_sql("SELECT id, username, role FROM users", conn)
+        if not staff_df.empty:
+            st.dataframe(staff_df)
+            
+            # Delete staff option
+            staff_to_delete = st.selectbox(
+                "Select staff to remove",
+                staff_df[staff_df['username'] != 'admin']['username'].tolist() + [None],
+                index=0
+            )
+            
+            if st.button("Remove Staff") and staff_to_delete:
+                conn.execute("DELETE FROM users WHERE username = ?", (staff_to_delete,))
+                conn.commit()
+                st.success(f"Staff {staff_to_delete} removed successfully!")
+                st.rerun()
+        else:
+            st.info("No staff accounts found")
+    
+    with tab2:
+        with st.form("staff_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            role = st.selectbox("Role", ["Staff", "Admin"])
+            
+            if st.form_submit_button("Create Staff Account"):
+                try:
+                    conn.execute(
+                        "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                        (username, hash_password(password), role)
+                    conn.commit()
+                    st.success("Staff account created successfully!")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Username already exists")
+
+def process_orders_data(orders_df):
+    """Process orders data to extract item-level details"""
+    if orders_df.empty:
+        return pd.DataFrame()
+    
+    # Convert string representation of list to actual list
+    orders_df['items'] = orders_df['items'].apply(ast.literal_eval)
+    
+    # Explode the items list into separate rows
+    items_df = orders_df.explode('items')
+    
+    # Extract item details
+    items_df = pd.concat([
+        items_df.drop(['items'], axis=1),
+        items_df['items'].apply(pd.Series)
+    ], axis=1)
+    
+    return items_df
+
 def reports_tab():
     st.header("Sales Reports")
     
-    orders = pd.read_sql("SELECT * FROM orders", conn)
+    # Date range selector
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
+    with col2:
+        end_date = st.date_input("End Date", datetime.now())
     
-    if orders.empty:
-        st.info("No orders found")
+    # Get orders within date range
+    query = f"""
+        SELECT * FROM orders 
+        WHERE date(timestamp) BETWEEN '{start_date}' AND '{end_date}'
+    """
+    orders_df = pd.read_sql(query, conn)
+    
+    if orders_df.empty:
+        st.info("No orders found in selected date range")
         return
     
-    orders['timestamp'] = pd.to_datetime(orders['timestamp'])
-    orders['date'] = orders['timestamp'].dt.date
+    # Process timestamps
+    orders_df['timestamp'] = pd.to_datetime(orders_df['timestamp'])
+    orders_df['date'] = orders_df['timestamp'].dt.date
+    orders_df['week'] = orders_df['timestamp'].dt.strftime('%Y-%U')
+    orders_df['month'] = orders_df['timestamp'].dt.strftime('%Y-%m')
     
-    tab1, tab2, tab3 = st.tabs(["Daily Sales", "Customer Analysis", "Menu Performance"])
+    # Process items data
+    items_df = process_orders_data(orders_df)
+    
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Summary", 
+        "Daily Sales", 
+        "Item Analysis",
+        "Payment Modes"
+    ])
     
     with tab1:
-        st.subheader("Daily Sales")
-        daily_sales = orders.groupby('date')['total'].sum().reset_index()
-        st.bar_chart(daily_sales, x="date", y="total")
-        st.dataframe(daily_sales)
+        st.subheader("Sales Summary")
+        
+        # Key metrics
+        total_sales = orders_df['total'].sum()
+        total_orders = len(orders_df)
+        avg_order_value = total_sales / total_orders if total_orders > 0 else 0
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Sales", f"₹{total_sales:,.2f}")
+        col2.metric("Total Orders", total_orders)
+        col3.metric("Avg Order Value", f"₹{avg_order_value:,.2f}")
+        
+        # Sales trend
+        st.subheader("Sales Trend")
+        sales_trend = orders_df.groupby('date')['total'].sum().reset_index()
+        st.line_chart(sales_trend, x='date', y='total')
     
     with tab2:
-        st.subheader("Customer Analysis")
-        customer_stats = orders.groupby('customer').agg({
-            'total': 'sum',
-            'id': 'count'
-        }).rename(columns={'id': 'order_count'})
-        st.dataframe(customer_stats)
+        st.subheader("Daily Sales Analysis")
+        
+        # Daily sales breakdown
+        daily_sales = orders_df.groupby('date').agg({
+            'total': ['sum', 'count'],
+            'payment_mode': lambda x: x.mode()[0] if len(x) > 0 else None
+        }).reset_index()
+        
+        daily_sales.columns = ['Date', 'Total Sales', 'Order Count', 'Popular Payment']
+        st.dataframe(daily_sales)
+        
+        # Daily sales chart
+        st.subheader("Daily Sales Chart")
+        st.bar_chart(daily_sales, x='Date', y='Total Sales')
     
     with tab3:
-        st.subheader("Menu Performance")
-        # Need to explode items for proper analysis
-        st.warning("Menu performance analysis requires data processing")
-        # Implementation would parse the items column
+        st.subheader("Item-wise Sales Analysis")
+        
+        if not items_df.empty:
+            # Time period selector
+            period = st.radio("Analysis Period", 
+                            ["Daily", "Weekly", "Monthly"],
+                            horizontal=True)
+            
+            group_col = 'date' if period == "Daily" else 'week' if period == "Weekly" else 'month'
+            
+            # Item sales by period
+            item_sales = items_df.groupby([group_col, 'item']).agg({
+                'quantity': 'sum',
+                'total': 'sum'
+            }).reset_index()
+            
+            # Pivot for better visualization
+            pivot_qty = item_sales.pivot(index=group_col, columns='item', values='quantity').fillna(0)
+            pivot_amount = item_sales.pivot(index=group_col, columns='item', values='total').fillna(0)
+            
+            st.subheader(f"Quantity Sold ({period})")
+            st.bar_chart(pivot_qty)
+            
+            st.subheader(f"Sales Amount ({period})")
+            st.bar_chart(pivot_amount)
+            
+            # Top items
+            st.subheader("Top Performing Items")
+            top_items = items_df.groupby('item').agg({
+                'quantity': 'sum',
+                'total': 'sum'
+            }).sort_values('total', ascending=False)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("By Quantity")
+                st.dataframe(top_items.sort_values('quantity', ascending=False).head(10))
+            with col2:
+                st.write("By Revenue")
+                st.dataframe(top_items.head(10))
+        else:
+            st.warning("No item data available for analysis")
+    
+    with tab4:
+        st.subheader("Payment Mode Analysis")
+        
+        # Payment mode distribution
+        payment_dist = orders_df.groupby('payment_mode').agg({
+            'id': 'count',
+            'total': 'sum'
+        }).rename(columns={'id': 'order_count'})
+        
+        st.write("Payment Mode Distribution")
+        st.dataframe(payment_dist)
+        
+        # Payment mode trend
+        st.subheader("Payment Mode Trend Over Time")
+        payment_trend = orders_df.groupby(['date', 'payment_mode'])['total'].sum().unstack().fillna(0)
+        st.area_chart(payment_trend)
 
 def backup_tab():
     st.header("System Backup")
@@ -339,7 +503,7 @@ st.markdown(f"Logged in as: **{st.session_state.current_user}** ({st.session_sta
 
 # Role-based tabs
 if st.session_state.user_role == "Admin":
-    tabs = st.tabs(["Orders", "Customers", "Inventory", "Reports", "Backup"])
+    tabs = st.tabs(["Orders", "Customers", "Inventory", "Reports", "Manage", "Backup"])
     with tabs[0]:
         order_tab()
     with tabs[1]:
@@ -349,6 +513,8 @@ if st.session_state.user_role == "Admin":
     with tabs[3]:
         reports_tab()
     with tabs[4]:
+        manage_tab()
+    with tabs[5]:
         backup_tab()
 else:  # Staff
     tabs = st.tabs(["Orders", "Customers"])
