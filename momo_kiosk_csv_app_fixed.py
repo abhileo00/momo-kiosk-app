@@ -1,7 +1,7 @@
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
 import os
 
@@ -33,7 +33,6 @@ def authenticate(username, password):
         return user.iloc[0]['role'], user.iloc[0]['access_pages'].split(',')
     return None, None
 
-# Initial admin setup
 if not os.path.exists(USERS_CSV):
     save_csv(pd.DataFrame([{
         'username': 'admin',
@@ -42,7 +41,6 @@ if not os.path.exists(USERS_CSV):
         'access_pages': 'all'
     }]), USERS_CSV)
 
-# Session state
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 if 'user_role' not in st.session_state:
@@ -52,7 +50,6 @@ if 'user_pages' not in st.session_state:
 if 'current_order' not in st.session_state:
     st.session_state.current_order = []
 
-# Login page
 if not st.session_state.current_user:
     st.title("Momo Kiosk Pro - Login")
     with st.form("login_form"):
@@ -69,9 +66,8 @@ if not st.session_state.current_user:
                 st.error("Invalid credentials")
     st.stop()
 
-# Pages
 def orders_page():
-    st.subheader("Orders")
+    st.header("Orders")
     menu_df = load_csv(MENU_CSV, pd.DataFrame(columns=["category", "item", "price", "cost", "stock"]))
     if menu_df.empty:
         st.warning("No items in menu.")
@@ -81,37 +77,43 @@ def orders_page():
     category = st.selectbox("Category", menu_df['category'].unique())
     selected_items = menu_df[menu_df['category'] == category]
 
+    added_items = []
     for _, item in selected_items.iterrows():
         qty = st.number_input(f"{item['item']} (â‚¹{item['price']}):", min_value=0, max_value=int(item['stock']), key=item['item'])
         if qty > 0:
-            st.session_state.current_order.append({
+            added_items.append({
                 'item': item['item'],
                 'price': item['price'],
                 'quantity': qty,
                 'total': qty * item['price']
             })
 
-    if st.session_state.current_order:
-        order_df = pd.DataFrame(st.session_state.current_order)
+    if added_items:
+        st.session_state.current_order = added_items
+        order_df = pd.DataFrame(added_items)
         st.write("Current Order:")
         st.dataframe(order_df)
         total = order_df['total'].sum()
-        st.markdown(f"**Total: â‚¹{total}**")
+        st.markdown(f"**Total: â‚¹{total:.2f}**")
         payment = st.radio("Payment Mode", ["Cash", "Credit", "Online"])
         if st.button("Submit Order"):
+            if not customer.strip():
+                st.error("Please enter customer name or phone.")
+                return
             orders_df = load_csv(ORDERS_CSV, pd.DataFrame())
             new_order = pd.DataFrame([{
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'customer': customer,
-                'items': str(st.session_state.current_order),
+                'items': str(added_items),
                 'total': total,
                 'payment_mode': payment,
                 'staff': st.session_state.current_user
             }])
             orders_df = pd.concat([orders_df, new_order], ignore_index=True)
             save_csv(orders_df, ORDERS_CSV)
+
             menu_df.set_index("item", inplace=True)
-            for i in st.session_state.current_order:
+            for i in added_items:
                 menu_df.at[i["item"], "stock"] -= i["quantity"]
             menu_df.reset_index(inplace=True)
             save_csv(menu_df, MENU_CSV)
@@ -120,7 +122,7 @@ def orders_page():
             st.rerun()
 
 def customers_page():
-    st.subheader("Customer Management")
+    st.header("Customer Management")
     df = load_csv(CUSTOMERS_CSV, pd.DataFrame(columns=["name", "phone", "credit_balance"]))
     st.dataframe(df)
     with st.form("add_customer"):
@@ -128,6 +130,9 @@ def customers_page():
         phone = st.text_input("Phone")
         credit = st.number_input("Credit", min_value=0.0, value=0.0)
         if st.form_submit_button("Save"):
+            if not name.strip():
+                st.error("Name cannot be empty.")
+                return
             df = df[df["name"] != name]
             df = pd.concat([df, pd.DataFrame([{"name": name, "phone": phone, "credit_balance": credit}])], ignore_index=True)
             save_csv(df, CUSTOMERS_CSV)
@@ -135,7 +140,7 @@ def customers_page():
             st.rerun()
 
 def inventory_page():
-    st.subheader("Inventory Management")
+    st.header("Inventory Management")
     df = load_csv(MENU_CSV, pd.DataFrame(columns=["category", "item", "price", "cost", "stock"]))
     st.dataframe(df)
     with st.form("add_item"):
@@ -145,6 +150,9 @@ def inventory_page():
         cost = st.number_input("Cost", min_value=0.0)
         stock = st.number_input("Stock", min_value=0)
         if st.form_submit_button("Add/Update"):
+            if not item.strip():
+                st.error("Item name cannot be empty.")
+                return
             df = df[df["item"] != item]
             df = pd.concat([df, pd.DataFrame([{"category": cat, "item": item, "price": price, "cost": cost, "stock": stock}])], ignore_index=True)
             save_csv(df, MENU_CSV)
@@ -152,7 +160,7 @@ def inventory_page():
             st.rerun()
 
 def reports_page():
-    st.subheader("Sales Reports")
+    st.header("Sales Reports")
     if not os.path.exists(ORDERS_CSV):
         st.info("No orders to show.")
         return
@@ -170,7 +178,7 @@ def reports_page():
         st.write(df.groupby('month')['total'].sum().reset_index().rename(columns={'total': 'Monthly Sales'}))
 
 def manage_users_page():
-    st.subheader("Manage Users")
+    st.header("Manage Users")
     df = load_csv(USERS_CSV, pd.DataFrame(columns=['username', 'password', 'role', 'access_pages']))
     st.dataframe(df[['username', 'role', 'access_pages']])
     with st.form("add_user"):
@@ -179,6 +187,9 @@ def manage_users_page():
         r = st.selectbox("Role", ["Staff", "Admin"])
         pages = st.multiselect("Pages", ["Orders", "Customers", "Inventory", "Reports"])
         if st.form_submit_button("Create"):
+            if not u.strip() or not p.strip():
+                st.error("Username and password cannot be empty.")
+                return
             if u in df['username'].values:
                 st.error("Username exists")
             else:
@@ -209,8 +220,6 @@ selected = st.sidebar.radio("Navigate", st.session_state.user_pages)
 pages[selected]()
 
 if st.sidebar.button("Logout"):
-    st.session_state.current_user = None
-    st.session_state.user_role = None
-    st.session_state.user_pages = []
-    st.session_state.current_order = []
+    for key in ['current_user', 'user_role', 'user_pages', 'current_order']:
+        st.session_state.pop(key, None)
     st.rerun()
