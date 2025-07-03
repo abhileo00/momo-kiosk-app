@@ -4,50 +4,37 @@ import sqlite3
 from datetime import datetime
 import time
 import hashlib
+import shutil
 import os
-from PIL import Image
-import matplotlib.pyplot as plt
-import seaborn as sns
+from pathlib import Path
 
-# ======================
-# SYSTEM CONFIGURATION
-# ======================
-st.set_page_config(
-    page_title="Food Order Pro",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Database Configuration
+DB_FILE = "food_orders.db"
+BACKUP_DIR = "backups/"
 
 # Initialize database
 def init_db():
-    conn = sqlite3.connect('food_orders.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # Create tables if they don't exist
+    # Create tables
     c.execute('''CREATE TABLE IF NOT EXISTS orders
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   timestamp TEXT,
                   customer TEXT,
-                  category TEXT,
-                  item TEXT,
-                  qty INTEGER,
-                  toppings TEXT,
-                  total_sale REAL,
-                  total_cost REAL,
-                  profit REAL,
+                  items TEXT,
+                  total REAL,
                   payment_mode TEXT,
-                  status TEXT DEFAULT 'pending',
+                  status TEXT,
                   staff TEXT)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS customers
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
                   phone TEXT,
-                  email TEXT,
                   credit_balance REAL DEFAULT 0,
                   total_orders INTEGER DEFAULT 0,
-                  total_spent REAL DEFAULT 0,
-                  last_order TEXT)''')
+                  total_spent REAL DEFAULT 0)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS menu
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,29 +42,23 @@ def init_db():
                   item TEXT UNIQUE,
                   price REAL,
                   cost REAL,
-                  active BOOLEAN DEFAULT 1)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS inventory
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  item TEXT UNIQUE,
-                  current_stock INTEGER,
-                  alert_threshold INTEGER)''')
+                  stock INTEGER)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT UNIQUE,
                   password TEXT,
-                  role TEXT,
-                  active BOOLEAN DEFAULT 1)''')
+                  role TEXT)''')
+    
+    # Insert default admin if not exists
+    c.execute("SELECT 1 FROM users WHERE username='admin'")
+    if not c.fetchone():
+        c.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
+                 ("admin", hash_password("admin123"), "Admin"))
     
     conn.commit()
     return conn
 
-conn = init_db()
-
-# ======================
-# AUTHENTICATION SYSTEM
-# ======================
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -89,235 +70,295 @@ def authenticate(username, password):
         return result[1]  # Return role
     return None
 
-# ======================
-# DATA MANAGEMENT
-# ======================
-def get_menu_items(category=None):
-    query = "SELECT * FROM menu WHERE active = 1"
-    if category:
-        query += f" AND category = '{category}'"
-    return pd.read_sql(query, conn)
+# Initialize app
+conn = init_db()
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
-def get_customer(name):
-    return pd.read_sql(f"SELECT * FROM customers WHERE name = '{name}'", conn)
+# Session state
+if 'current_order' not in st.session_state:
+    st.session_state.current_order = []
+if 'customer_name' not in st.session_state:
+    st.session_state.customer_name = ""
+if 'current_user' not in st.session_state:
+    st.session_state.current_user = None
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = None
 
-def save_order(order_data):
-    order_data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    order_df = pd.DataFrame([order_data])
-    order_df.to_sql('orders', conn, if_exists='append', index=False)
+# Login Screen
+if not st.session_state.current_user:
+    st.title("Food Order Pro - Login")
     
-    # Update customer stats
-    if order_data['customer'] != "Walk-in":
-        conn.execute(f"""
-            UPDATE customers 
-            SET total_orders = total_orders + 1,
-                total_spent = total_spent + {order_data['total_sale']},
-                last_order = '{order_data['timestamp']}'
-            WHERE name = '{order_data['customer']}'
-        """)
-        conn.commit()
-
-def update_inventory(item, qty_change):
-    conn.execute(f"""
-        UPDATE inventory 
-        SET current_stock = current_stock + {qty_change}
-        WHERE item = '{item}'
-    """)
-    conn.commit()
-
-# ======================
-# UI COMPONENTS
-# ======================
-def menu_item_card(item, details):
-    with st.container():
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown(f"**{item}**")
-            st.markdown(f"Price: ₹{details['price']}")
-            
-            if details.get('current_stock', 0) <= details.get('alert_threshold', 0):
-                st.warning(f"Low stock: {details['current_stock']} remaining")
-            
-        with col2:
-            qty = st.number_input(
-                "Qty",
-                min_value=0,
-                max_value=min(20, details.get('current_stock', 20)),
-                key=f"qty_{item}",
-                value=0
-            )
-            
-        if qty > 0:
-            toppings = []
-            if st.checkbox("Add toppings", key=f"top_toggle_{item}"):
-                cols = st.columns(4)
-                for i, (top_name, top_price) in enumerate(TOPPINGS.items()):
-                    with cols[i % 4]:
-                        if st.checkbox(f"{top_name} (+₹{top_price})", key=f"top_{item}_{top_name}"):
-                            toppings.append((top_name, top_price))
-            
-            if st.button("Add to Order", key=f"btn_{item}"):
-                topping_names = ", ".join([t[0] for t in toppings])
-                total_price = (details["price"] + sum([t[1] for t in toppings])) * qty
-                
-                order_data = {
-                    "customer": st.session_state.customer_name,
-                    "category": details["category"],
-                    "item": item,
-                    "qty": qty,
-                    "toppings": topping_names,
-                    "total_sale": total_price,
-                    "total_cost": details["cost"] * qty,
-                    "profit": total_price - (details["cost"] * qty),
-                    "payment_mode": "Pending",
-                    "staff": st.session_state.current_user
-                }
-                
-                st.session_state.current_order.append(order_data)
-                update_inventory(item, -qty)
-                st.success(f"Added {qty} × {item}")
-                time.sleep(0.3)
-                st.rerun()
-
-# ======================
-# MAIN APPLICATION
-# ======================
-def main():
-    # Initialize session state
-    if 'current_order' not in st.session_state:
-        st.session_state.current_order = []
-    if 'customer_name' not in st.session_state:
-        st.session_state.customer_name = "Walk-in"
-    if 'current_user' not in st.session_state:
-        st.session_state.current_user = None
-    if 'user_role' not in st.session_state:
-        st.session_state.user_role = None
-    
-    # Login Screen
-    if not st.session_state.current_user:
-        st.title("Food Order Pro - Login")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
         
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            
-            if st.form_submit_button("Login"):
-                role = authenticate(username, password)
-                if role:
-                    st.session_state.current_user = username
-                    st.session_state.user_role = role
-                    st.rerun()
-                else:
-                    st.error("Invalid credentials")
-        return
-    
-    # Main Application
-    st.title("Food Order Pro")
-    st.markdown(f"**Logged in as:** {st.session_state.current_user} ({st.session_state.user_role})")
-    
-    # Navigation
-    menu_items = {
-        "New Order": new_order,
-        "Order History": order_history,
-        "Customer Management": customer_management,
-        "Menu Management": menu_management,
-        "Inventory": inventory_management,
-        "Reports": reports,
-        "Admin": admin_panel
-    }
-    
-    if st.session_state.user_role == "Staff":
-        menu_items = {k: v for k, v in menu_items.items() if k in ["New Order", "Order History"]}
-    
-    selected = st.sidebar.radio("Navigation", list(menu_items.keys()))
-    menu_items[selected]()
+        if st.form_submit_button("Login"):
+            role = authenticate(username, password)
+            if role:
+                st.session_state.current_user = username
+                st.session_state.user_role = role
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
+    st.stop()
 
-def new_order():
+# ======================
+# TAB CONTENT FUNCTIONS
+# ======================
+
+def order_tab():
     st.header("New Order")
     
     # Customer Section
-    with st.expander("Customer Information", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            customer_name = st.text_input(
-                "Customer Name",
-                value=st.session_state.customer_name,
-                placeholder="Enter name or 'Walk-in'"
-            )
-            st.session_state.customer_name = customer_name
-        
-        with col2:
-            if customer_name != "Walk-in":
-                customer = get_customer(customer_name)
-                if not customer.empty:
-                    st.markdown(f"""
-                    **Customer Info**  
-                    Phone: {customer.iloc[0]['phone'] or 'N/A'}  
-                    Email: {customer.iloc[0]['email'] or 'N/A'}  
-                    Orders: {customer.iloc[0]['total_orders']}  
-                    Total Spent: ₹{customer.iloc[0]['total_spent']}
-                    """)
-                elif st.button("Register New Customer"):
-                    register_customer(customer_name)
-                    st.rerun()
-
+    customer_name = st.text_input(
+        "Customer Name", 
+        value=st.session_state.customer_name,
+        placeholder="Enter name for credit or 'Walk-in'"
+    )
+    st.session_state.customer_name = customer_name
+    
     # Menu Selection
-    category = st.selectbox("Select Category", ["Momos", "Sandwich", "Maggi"])
-    menu_df = get_menu_items(category)
+    menu_df = pd.read_sql("SELECT * FROM menu WHERE stock > 0", conn)
+    categories = menu_df['category'].unique()
     
-    if menu_df.empty:
-        st.warning("No items available in this category")
-        return
+    category = st.selectbox("Select Category", categories)
+    items = menu_df[menu_df['category'] == category]
     
-    # Merge with inventory data
-    inventory_df = pd.read_sql("SELECT item, current_stock, alert_threshold FROM inventory", conn)
-    menu_df = menu_df.merge(inventory_df, on="item", how="left")
+    for _, item in items.iterrows():
+        with st.expander(f"{item['item']} - ₹{item['price']} (Stock: {item['stock']})"):
+            qty = st.number_input(
+                "Quantity", 
+                min_value=0, 
+                max_value=item['stock'],
+                key=f"qty_{item['item']}"
+            )
+            
+            if qty > 0 and st.button(f"Add {item['item']}", key=f"add_{item['item']}"):
+                order_item = {
+                    "item": item['item'],
+                    "price": item['price'],
+                    "quantity": qty,
+                    "total": item['price'] * qty
+                }
+                st.session_state.current_order.append(order_item)
+                
+                # Update stock
+                conn.execute("UPDATE menu SET stock = stock - ? WHERE item = ?", 
+                           (qty, item['item']))
+                conn.commit()
+                
+                st.success(f"Added {qty} × {item['item']}")
+                time.sleep(0.5)
+                st.rerun()
     
-    # Display menu items
-    for _, row in menu_df.iterrows():
-        menu_item_card(row['item'], row.to_dict())
-
     # Order Summary
     if st.session_state.current_order:
-        st.header("Order Summary")
+        st.subheader("Order Summary")
+        order_df = pd.DataFrame(st.session_state.current_order)
+        st.dataframe(order_df)
         
-        for item in st.session_state.current_order:
-            with st.container():
-                st.markdown(f"""
-                **{item['item']}** × {item['qty']}  
-                {f"Toppings: {item['toppings']}" if item['toppings'] else ""}  
-                Price: ₹{item['total_sale']}
-                """)
+        total = order_df['total'].sum()
+        st.markdown(f"**Total: ₹{total}**")
         
-        total = sum(item['total_sale'] for item in st.session_state.current_order)
-        st.subheader(f"Total: ₹{total}")
-        
-        # Payment and Submission
         payment_mode = st.radio("Payment Method", ["Cash", "Credit", "Online"])
+        
+        if st.button("Submit Order"):
+            # Save order
+            order_data = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "customer": customer_name,
+                "items": str(st.session_state.current_order),
+                "total": total,
+                "payment_mode": payment_mode,
+                "status": "Completed",
+                "staff": st.session_state.current_user
+            }
+            
+            if payment_mode == "Credit" and customer_name:
+                # Update customer credit
+                conn.execute("""
+                    INSERT OR IGNORE INTO customers (name) VALUES (?)
+                """, (customer_name,))
+                
+                conn.execute("""
+                    UPDATE customers 
+                    SET credit_balance = credit_balance + ?,
+                        total_orders = total_orders + 1,
+                        total_spent = total_spent + ?
+                    WHERE name = ?
+                """, (total, total, customer_name))
+            
+            # Save order
+            order_df = pd.DataFrame([order_data])
+            order_df.to_sql('orders', conn, if_exists='append', index=False)
+            
+            st.success("Order submitted successfully!")
+            st.session_state.current_order = []
+            time.sleep(1)
+            st.rerun()
+
+def customers_tab():
+    st.header("Customer Management")
+    
+    tab1, tab2 = st.tabs(["View Customers", "Add/Edit Customer"])
+    
+    with tab1:
+        customers = pd.read_sql("SELECT * FROM customers", conn)
+        if not customers.empty:
+            st.dataframe(customers)
+        else:
+            st.info("No customers found")
+    
+    with tab2:
+        with st.form("customer_form"):
+            name = st.text_input("Full Name")
+            phone = st.text_input("Phone Number")
+            credit = st.number_input("Credit Balance", min_value=0.0, value=0.0)
+            
+            if st.form_submit_button("Save Customer"):
+                conn.execute("""
+                    INSERT OR REPLACE INTO customers 
+                    (name, phone, credit_balance) 
+                    VALUES (?, ?, ?)
+                """, (name, phone, credit))
+                conn.commit()
+                st.success("Customer saved successfully!")
+                st.rerun()
+
+def inventory_tab():
+    st.header("Inventory Management")
+    
+    menu_items = pd.read_sql("SELECT * FROM menu", conn)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Current Inventory")
+        edited_items = st.data_editor(
+            menu_items,
+            column_config={
+                "stock": st.column_config.NumberColumn("Stock", min_value=0)
+            },
+            key="inventory_editor"
+        )
+        
+        if st.button("Update Inventory"):
+            edited_items.to_sql('menu', conn, if_exists='replace', index=False)
+            st.success("Inventory updated!")
+            st.rerun()
+    
+    with col2:
+        st.subheader("Add New Item")
+        with st.form("new_item_form"):
+            category = st.selectbox("Category", ["Momos", "Sandwich", "Maggi"])
+            item = st.text_input("Item Name")
+            price = st.number_input("Price", min_value=0.0)
+            cost = st.number_input("Cost", min_value=0.0)
+            stock = st.number_input("Initial Stock", min_value=0)
+            
+            if st.form_submit_button("Add Item"):
+                conn.execute("""
+                    INSERT INTO menu 
+                    (category, item, price, cost, stock) 
+                    VALUES (?, ?, ?, ?, ?)
+                """, (category, item, price, cost, stock))
+                conn.commit()
+                st.success("Item added to menu!")
+                st.rerun()
+
+def reports_tab():
+    st.header("Sales Reports")
+    
+    orders = pd.read_sql("SELECT * FROM orders", conn)
+    
+    if orders.empty:
+        st.info("No orders found")
+        return
+    
+    orders['timestamp'] = pd.to_datetime(orders['timestamp'])
+    orders['date'] = orders['timestamp'].dt.date
+    
+    tab1, tab2, tab3 = st.tabs(["Daily Sales", "Customer Analysis", "Menu Performance"])
+    
+    with tab1:
+        st.subheader("Daily Sales")
+        daily_sales = orders.groupby('date')['total'].sum().reset_index()
+        st.bar_chart(daily_sales, x="date", y="total")
+        st.dataframe(daily_sales)
+    
+    with tab2:
+        st.subheader("Customer Analysis")
+        customer_stats = orders.groupby('customer').agg({
+            'total': 'sum',
+            'id': 'count'
+        }).rename(columns={'id': 'order_count'})
+        st.dataframe(customer_stats)
+    
+    with tab3:
+        st.subheader("Menu Performance")
+        # Need to explode items for proper analysis
+        st.warning("Menu performance analysis requires data processing")
+        # Implementation would parse the items column
+
+def backup_tab():
+    st.header("System Backup")
+    
+    if st.button("Create Backup"):
+        backup_file = f"{BACKUP_DIR}backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        shutil.copy2(DB_FILE, backup_file)
+        st.success(f"Backup created: {backup_file}")
+        st.rerun()
+    
+    st.subheader("Available Backups")
+    backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith('.db')], reverse=True)
+    
+    if backups:
+        selected = st.selectbox("Select backup", backups)
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Submit Order", type="primary"):
-                for item in st.session_state.current_order:
-                    item['payment_mode'] = payment_mode
-                    save_order(item)
-                
-                st.success("Order submitted successfully!")
-                st.session_state.current_order = []
-                time.sleep(1)
+            if st.button("Restore Backup"):
+                shutil.copy2(f"{BACKUP_DIR}{selected}", DB_FILE)
+                st.success("Database restored! Please refresh the page.")
+        with col2:
+            if st.button("Delete Backup"):
+                os.remove(f"{BACKUP_DIR}{selected}")
+                st.success("Backup deleted!")
                 st.rerun()
         
-        with col2:
-            if st.button("Clear Order"):
-                # Restore inventory
-                for item in st.session_state.current_order:
-                    update_inventory(item['item'], item['qty'])
-                
-                st.session_state.current_order = []
-                st.rerun()
+        st.write(f"Selected: {selected}")
+    else:
+        st.info("No backups available")
 
-# Additional functions (order_history, customer_management, etc.) would be defined here
-# with similar detailed implementations...
+# ======================
+# MAIN APP LAYOUT
+# ======================
 
-if __name__ == "__main__":
-    main()
+st.title("Food Order Pro")
+st.markdown(f"Logged in as: **{st.session_state.current_user}** ({st.session_state.user_role})")
+
+# Role-based tabs
+if st.session_state.user_role == "Admin":
+    tabs = st.tabs(["Orders", "Customers", "Inventory", "Reports", "Backup"])
+    with tabs[0]:
+        order_tab()
+    with tabs[1]:
+        customers_tab()
+    with tabs[2]:
+        inventory_tab()
+    with tabs[3]:
+        reports_tab()
+    with tabs[4]:
+        backup_tab()
+else:  # Staff
+    tabs = st.tabs(["Orders", "Customers"])
+    with tabs[0]:
+        order_tab()
+    with tabs[1]:
+        customers_tab()
+
+# Logout button
+if st.sidebar.button("Logout"):
+    st.session_state.current_user = None
+    st.session_state.user_role = None
+    st.rerun()
