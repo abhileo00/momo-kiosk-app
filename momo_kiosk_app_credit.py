@@ -5,6 +5,7 @@ import os
 import shutil
 import re
 import ast
+from pathlib import Path
 
 # ======================
 # DATA CONFIGURATION
@@ -80,16 +81,24 @@ def init_data_system():
 
 def load_db(db_name):
     try:
-        return pd.read_csv(DATABASES[db_name])
+        df = pd.read_csv(DATABASES[db_name])
+        # Convert string representations of lists to actual lists for orders
+        if db_name == "orders" and 'items' in df.columns:
+            df['items'] = df['items'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) else [])
+        return df
     except (FileNotFoundError, pd.errors.EmptyDataError):
         return pd.DataFrame()
 
 def save_db(db_name, df):
+    # Convert lists to strings for storage
+    if db_name == "orders" and 'items' in df.columns:
+        df = df.copy()
+        df['items'] = df['items'].astype(str)
     df.to_csv(DATABASES[db_name], index=False)
 
 def get_customer(mobile):
     customers_df = load_db("customers")
-    if not customers_df.empty and mobile in customers_df['mobile'].astype(str).values:
+    if not customers_df.empty and str(mobile) in customers_df['mobile'].astype(str).values:
         return customers_df[customers_df['mobile'].astype(str) == str(mobile)].iloc[0].to_dict()
     return None
 
@@ -136,7 +145,7 @@ def calculate_total(order_items):
 
 def create_backup():
     backup_folder = DATA_FOLDER + "backups/" + datetime.now().strftime("%Y%m%d_%H%M%S") + "/"
-    os.makedirs(backup_folder)
+    os.makedirs(backup_folder, exist_ok=True)
     for db_file in DATABASES.values():
         if os.path.exists(db_file):
             shutil.copy2(db_file, backup_folder)
@@ -296,7 +305,7 @@ with selected_tab[0]:
         for _, item in menu_df.iterrows():
             stock = item.get('stock', float('inf'))
             with st.expander(f"{item['item']} - ₹{item['price']} ({stock if not pd.isna(stock) else '∞'} available)"):
-                max_quantity = min(10, stock) if not pd.isna(stock) else 10
+                max_quantity = min(10, stock) if not pd.isna(stock) and stock != float('inf') else 10
                 quantity = st.number_input(f"Quantity", 
                                         min_value=0, 
                                         max_value=max_quantity, 
@@ -362,7 +371,7 @@ with selected_tab[0]:
                     new_order = {
                         "order_id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "mobile": mobile,
-                        "items": str(order_items),
+                        "items": order_items,
                         "total": total_amount,
                         "payment_method": payment_method,
                         "paid": False,
@@ -420,7 +429,7 @@ with selected_tab[0]:
             new_order = {
                 "order_id": datetime.now().strftime("%Y%m%d%H%M%S"),
                 "mobile": mobile if mobile else "",
-                "items": str(order_items),
+                "items": order_items,
                 "total": total_amount,
                 "payment_method": payment_method,
                 "paid": True,
@@ -486,14 +495,4 @@ with selected_tab[1]:
                             "type": "payment",
                             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                             "staff": st.session_state.username
-                        }])], ignore_index=True)
-                        save_db("credit", credit_df)
-                        st.success("Payment recorded!")
-                        st.rerun()
-            
-            with col2:
-                with st.form("credit_form"):
-                    credit_amount = st.number_input("Credit Amount", min_value=0, value=0)
-                    if st.form_submit_button("Add Credit") and credit_amount > 0:
-                        customers_df = load_db("customers")
-     
+                        }])], ignore
