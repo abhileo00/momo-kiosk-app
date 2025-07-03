@@ -71,7 +71,7 @@ def init_db():
         if not c.fetchone():
             hashed_pw = hash_password("admin123")
             c.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                      ("admin", hashed_pw, "Admin"))
+                     ("admin", hashed_pw, "Admin"))
         
         # Create sample menu items if empty
         c.execute("SELECT 1 FROM menu LIMIT 1")
@@ -170,7 +170,7 @@ def order_management():
         st.session_state.current_order = []
     
     # Category tabs
-    tabs = st.tabs([f"📋 {cat}" for cat in categories])
+    tabs = st.tabs([f"{cat}" for cat in categories])
     
     for i, category in enumerate(categories):
         with tabs[i]:
@@ -231,7 +231,15 @@ def order_management():
                 conn.execute("""
                     INSERT INTO orders (timestamp, customer, items, total, payment_mode, status, staff)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, tuple(order_data.values()))
+                """, (
+                    order_data["timestamp"],
+                    order_data["customer"],
+                    order_data["items"],
+                    order_data["total"],
+                    order_data["payment_mode"],
+                    order_data["status"],
+                    order_data["staff"]
+                ))
                 
                 conn.commit()
                 st.success("Order submitted successfully!")
