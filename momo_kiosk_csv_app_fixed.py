@@ -1,5 +1,12 @@
-import streamlit as st import pandas as pd import sqlite3 from datetime import datetime import time import hashlib import shutil import os from pathlib import Path
-
+import streamlit as st
+import pandas as pd
+import sqlite3
+from datetime import datetime
+import time
+import hashlib
+import shutil
+import os
+from pathlib import Path
 Database Configuration
 
 DB_FILE = "food_orders.db" BACKUP_DIR = "backups/"
