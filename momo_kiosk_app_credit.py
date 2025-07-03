@@ -12,7 +12,7 @@ DATA_FOLDER = "momo_kiosk_data/"
 DATABASES = {
     "orders": DATA_FOLDER + "orders.csv",
     "menu": DATA_FOLDER + "menu.csv",
-    "customers": DATA_FOLDER + "customers.csv",  # Fixed typo in filename
+    "customers": DATA_FOLDER + "customers.csv",
     "credit": DATA_FOLDER + "credit_transactions.csv",
     "inventory": DATA_FOLDER + "inventory.csv"
 }
@@ -46,15 +46,20 @@ def init_data_system():
         os.makedirs(DATA_FOLDER)
         os.makedirs(DATA_FOLDER + "backups/")
 
-    # Initialize all databases
-    for db_name, db_path in DATABASES.items():
-        if not os.path.exists(db_path):
-            if db_name == "menu":
-                menu_df = pd.DataFrame.from_dict(MENU_ITEMS, orient='index').reset_index()
-                menu_df = menu_df.rename(columns={'index': 'item'})
-                menu_df.to_csv(db_path, index=False)
-            else:
-                pd.DataFrame().to_csv(db_path, index=False)
+    # Initialize menu database
+    if not os.path.exists(DATABASES["menu"]):
+        menu_df = pd.DataFrame.from_dict(MENU_ITEMS, orient='index').reset_index()
+        menu_df = menu_df.rename(columns={'index': 'item'})
+        menu_df.to_csv(DATABASES["menu"], index=False)
+
+    # Initialize customers database
+    if not os.path.exists(DATABASES["customers"]):
+        pd.DataFrame(columns=CUSTOMER_COLUMNS).to_csv(DATABASES["customers"], index=False)
+
+    # Initialize other databases with empty DataFrames if they don't exist
+    for db in ["orders", "credit", "inventory"]:
+        if not os.path.exists(DATABASES[db]):
+            pd.DataFrame().to_csv(DATABASES[db], index=False)
 
 def load_db(db_name):
     try:
@@ -75,6 +80,7 @@ def update_customer(mobile, name=None, amount=0, order_placed=False):
     customers_df = load_db("customers")
     
     if not customers_df.empty and mobile in customers_df['mobile'].values:
+        # Update existing customer
         idx = customers_df[customers_df['mobile'] == mobile].index[0]
         
         if order_placed:
@@ -86,6 +92,7 @@ def update_customer(mobile, name=None, amount=0, order_placed=False):
         if name:
             customers_df.at[idx, 'name'] = name
     else:
+        # Create new customer
         new_customer = {
             "mobile": mobile,
             "name": name if name else "New Customer",
@@ -108,6 +115,14 @@ def calculate_total(order_items):
             total += TOPPINGS.get(topping, 0) * item['quantity']
     return total
 
+def create_backup():
+    backup_folder = DATA_FOLDER + "backups/" + datetime.now().strftime("%Y%m%d_%H%M%S") + "/"
+    os.makedirs(backup_folder)
+    for db_file in DATABASES.values():
+        if os.path.exists(db_file):
+            shutil.copy2(db_file, backup_folder)
+    return backup_folder
+
 # ======================
 # STREAMLIT APP
 # ======================
@@ -117,6 +132,9 @@ init_data_system()
 # Initialize session state
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
+    st.session_state.authenticated = False
+    st.session_state.username = None
+
 if "current_order" not in st.session_state:
     st.session_state.current_order = {
         "items": [],
@@ -126,24 +144,48 @@ if "current_order" not in st.session_state:
         "paid": False
     }
 
+# Authentication credentials
+VALID_USERS = {
+    "staff": {
+        "password": "staff@123",
+        "role": "Staff"
+    },
+    "admin": {
+        "password": "admin@123",
+        "role": "Admin"
+    }
+}
+
 # Login Page
-if not st.session_state.user_role:
+if not st.session_state.authenticated:
     st.title("Momo Kiosk Pro - Login")
     
     with st.form("login_form"):
-        role = st.selectbox("Select Role", ["Staff", "Admin"])
+        username = st.text_input("Username").lower()
         password = st.text_input("Password", type="password")
         
         if st.form_submit_button("Login"):
-            if (role == "Staff" and password == "staff123") or \
-               (role == "Admin" and password == "admin123"):
-                st.session_state.user_role = role
-                st.rerun()
+            if username in VALID_USERS:
+                if password == VALID_USERS[username]["password"]:
+                    st.session_state.user_role = VALID_USERS[username]["role"]
+                    st.session_state.authenticated = True
+                    st.session_state.username = username
+                    st.rerun()
+                else:
+                    st.error("Incorrect password")
             else:
-                st.error("Invalid credentials")
-    st.stop()  # Prevent accessing main app without login
+                st.error("Invalid username")
+    st.stop()
 
 # Main App
+st.sidebar.title(f"Welcome, {st.session_state.username} ({st.session_state.user_role})")
+if st.sidebar.button("Logout"):
+    st.session_state.authenticated = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+    st.rerun()
+
+# Tabs setup based on role
 tabs = ["📝 Order", "👥 Customers"]
 if st.session_state.user_role == "Admin":
     tabs.extend(["📦 Inventory", "📊 Reports", "💾 Backup"])
@@ -237,16 +279,16 @@ with selected_tab[0]:
                         "items": str(order_items),
                         "total": total_amount,
                         "payment_method": payment_method,
-                        "paid": False,  # Credit payments are not immediately paid
+                        "paid": False,
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "staff": st.session_state.user_role
+                        "staff": st.session_state.username
                     }
                     
                     orders_df = load_db("orders")
                     orders_df = pd.concat([orders_df, pd.DataFrame([new_order])], ignore_index=True)
                     save_db("orders", orders_df)
                     
-                    if customer:  # Deduct from existing customer's balance
+                    if customer:
                         customers_df = load_db("customers")
                         idx = customers_df[customers_df['mobile'] == mobile].index[0]
                         customers_df.at[idx, 'credit_balance'] -= total_amount
@@ -278,7 +320,7 @@ with selected_tab[0]:
                 "payment_method": payment_method,
                 "paid": True,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "staff": st.session_state.user_role
+                "staff": st.session_state.username
             }
             
             orders_df = load_db("orders")
@@ -337,7 +379,7 @@ with selected_tab[1]:
                             "amount": payment_amount,
                             "type": "payment",
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "staff": st.session_state.user_role
+                            "staff": st.session_state.username
                         }])], ignore_index=True)
                         save_db("credit", credit_df)
                         st.success("Payment recorded!")
@@ -358,7 +400,7 @@ with selected_tab[1]:
                             "amount": credit_amount,
                             "type": "credit",
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "staff": st.session_state.user_role
+                            "staff": st.session_state.username
                         }])], ignore_index=True)
                         save_db("credit", credit_df)
                         st.success("Credit added!")
@@ -417,11 +459,7 @@ if st.session_state.user_role == "Admin":
         st.header("💾 System Backup")
         
         if st.button("Create Backup Now"):
-            backup_folder = DATA_FOLDER + "backups/" + datetime.now().strftime("%Y%m%d_%H%M%S") + "/"
-            os.makedirs(backup_folder)
-            for db_file in DATABASES.values():
-                if os.path.exists(db_file):
-                    shutil.copy2(db_file, backup_folder)
+            backup_folder = create_backup()
             st.success(f"Backup created successfully at: {backup_folder}")
         
         st.subheader("Restore Backup")
