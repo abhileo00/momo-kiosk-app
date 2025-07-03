@@ -63,15 +63,25 @@ def init_data_system():
         menu_df = food_df[['item', 'price', 'category']]
         menu_df.to_csv(DATABASES["menu"], index=False)
 
-    # Initialize other databases
-    for db_name, db_path in DATABASES.items():
-        if not os.path.exists(db_path) and db_name not in ["food_items", "menu"]:
-            pd.DataFrame().to_csv(db_path, index=False)
+    # Initialize other databases with proper columns
+    if not os.path.exists(DATABASES["orders"]):
+        pd.DataFrame(columns=[
+            "order_id", "mobile", "items", "total", 
+            "payment_method", "paid", "timestamp", "staff"
+        ]).to_csv(DATABASES["orders"], index=False)
+        
+    if not os.path.exists(DATABASES["customers"]):
+        pd.DataFrame(columns=CUSTOMER_COLUMNS).to_csv(DATABASES["customers"], index=False)
+        
+    if not os.path.exists(DATABASES["credit"]):
+        pd.DataFrame(columns=[
+            "mobile", "amount", "type", "timestamp", "staff"
+        ]).to_csv(DATABASES["credit"], index=False)
 
 def load_db(db_name):
     try:
         return pd.read_csv(DATABASES[db_name])
-    except:
+    except (FileNotFoundError, pd.errors.EmptyDataError):
         return pd.DataFrame()
 
 def save_db(db_name, df):
@@ -79,21 +89,25 @@ def save_db(db_name, df):
 
 def get_customer(mobile):
     customers_df = load_db("customers")
-    if not customers_df.empty and mobile in customers_df['mobile'].values:
-        return customers_df[customers_df['mobile'] == mobile].iloc[0].to_dict()
+    if not customers_df.empty and mobile in customers_df['mobile'].astype(str).values:
+        return customers_df[customers_df['mobile'].astype(str) == str(mobile)].iloc[0].to_dict()
     return None
 
 def update_customer(mobile, name=None, amount=0, order_placed=False):
     customers_df = load_db("customers")
+    mobile = str(mobile)  # Ensure mobile is string for consistency
     
-    if not customers_df.empty and mobile in customers_df['mobile'].values:
-        idx = customers_df[customers_df['mobile'] == mobile].index[0]
+    if not customers_df.empty and mobile in customers_df['mobile'].astype(str).values:
+        idx = customers_df[customers_df['mobile'].astype(str) == mobile].index[0]
         
         if order_placed:
-            customers_df.at[idx, 'order_count'] += 1
-            customers_df.at[idx, 'total_spent'] += amount
+            customers_df.at[idx, 'order_count'] = customers_df.at[idx, 'order_count'] + 1
+            customers_df.at[idx, 'total_spent'] = customers_df.at[idx, 'total_spent'] + amount
             customers_df.at[idx, 'last_order'] = datetime.now().strftime('%Y-%m-%d')
-            customers_df.at[idx, 'loyalty_points'] += int(amount / 10)
+            customers_df.at[idx, 'loyalty_points'] = customers_df.at[idx, 'loyalty_points'] + int(amount / 10)
+            
+            if pd.isna(customers_df.at[idx, 'first_order']) or customers_df.at[idx, 'first_order'] == '':
+                customers_df.at[idx, 'first_order'] = datetime.now().strftime('%Y-%m-%d')
             
         if name:
             customers_df.at[idx, 'name'] = name
@@ -130,8 +144,12 @@ def create_backup():
 
 def get_food_items():
     try:
-        return pd.read_csv(DATABASES["food_items"])
-    except:
+        food_df = pd.read_csv(DATABASES["food_items"])
+        # Ensure stock is integer
+        if 'stock' in food_df.columns:
+            food_df['stock'] = food_df['stock'].fillna(0).astype(int)
+        return food_df
+    except (FileNotFoundError, pd.errors.EmptyDataError):
         return pd.DataFrame()
 
 def add_food_item(name, price, category, stock):
@@ -152,8 +170,12 @@ def update_stock(item_name, quantity_change):
     food_df = get_food_items()
     if not food_df.empty and item_name in food_df['item'].values:
         idx = food_df[food_df['item'] == item_name].index[0]
-        food_df.at[idx, 'stock'] += quantity_change
+        current_stock = food_df.at[idx, 'stock']
+        new_stock = max(0, current_stock + quantity_change)  # Prevent negative stock
+        food_df.at[idx, 'stock'] = new_stock
         food_df.to_csv(DATABASES["food_items"], index=False)
+        return True
+    return False
 
 # ======================
 # STREAMLIT APP
@@ -266,28 +288,33 @@ with selected_tab[0]:
     food_df = get_food_items()
     
     # Merge menu with stock information
-    menu_df = menu_df.merge(food_df[['item', 'stock']], on='item', how='left')
+    if not menu_df.empty and not food_df.empty:
+        menu_df = menu_df.merge(food_df[['item', 'stock']], on='item', how='left')
     
     order_items = []
-    for _, item in menu_df.iterrows():
-        with st.expander(f"{item['item']} - ₹{item['price']} ({item['stock']} available)"):
-            max_quantity = min(10, item['stock']) if not pd.isna(item['stock']) else 10
-            quantity = st.number_input(f"Quantity", 
-                                     min_value=0, 
-                                     max_value=max_quantity, 
-                                     key=f"qty_{item['item']}")
-            if quantity > 0:
-                toppings = st.multiselect(
-                    f"Toppings for {item['item']}",
-                    options=list(TOPPINGS.keys()),
-                    key=f"top_{item['item']}"
-                )
-                order_items.append({
-                    'item': item['item'],
-                    'price': item['price'],
-                    'quantity': quantity,
-                    'toppings': toppings
-                })
+    if not menu_df.empty:
+        for _, item in menu_df.iterrows():
+            stock = item.get('stock', float('inf'))
+            with st.expander(f"{item['item']} - ₹{item['price']} ({stock if not pd.isna(stock) else '∞'} available)"):
+                max_quantity = min(10, stock) if not pd.isna(stock) else 10
+                quantity = st.number_input(f"Quantity", 
+                                        min_value=0, 
+                                        max_value=max_quantity, 
+                                        key=f"qty_{item['item']}")
+                if quantity > 0:
+                    toppings = st.multiselect(
+                        f"Toppings for {item['item']}",
+                        options=list(TOPPINGS.keys()),
+                        key=f"top_{item['item']}"
+                    )
+                    order_items.append({
+                        'item': item['item'],
+                        'price': item['price'],
+                        'quantity': quantity,
+                        'toppings': toppings
+                    })
+    else:
+        st.warning("No menu items available")
     
     total_amount = calculate_total(order_items) if order_items else 0
     st.subheader(f"Total Amount: ₹{total_amount}")
@@ -362,7 +389,7 @@ with selected_tab[0]:
                     # Update customer balance
                     if customer:
                         customers_df = load_db("customers")
-                        idx = customers_df[customers_df['mobile'] == mobile].index[0]
+                        idx = customers_df[customers_df['mobile'].astype(str) == mobile].index[0]
                         customers_df.at[idx, 'credit_balance'] -= total_amount
                         save_db("customers", customers_df)
                     
@@ -443,12 +470,12 @@ with selected_tab[1]:
             with col1:
                 with st.form("payment_form"):
                     payment_amount = st.number_input("Payment Amount", 
-                                                   min_value=0, 
-                                                   max_value=current_balance, 
-                                                   value=0)
+                                                  min_value=0, 
+                                                  max_value=current_balance, 
+                                                  value=0)
                     if st.form_submit_button("Record Payment") and payment_amount > 0:
                         customers_df = load_db("customers")
-                        idx = customers_df[customers_df['mobile'] == search_mobile].index[0]
+                        idx = customers_df[customers_df['mobile'].astype(str) == search_mobile].index[0]
                         customers_df.at[idx, 'credit_balance'] -= payment_amount
                         save_db("customers", customers_df)
                         
@@ -457,7 +484,7 @@ with selected_tab[1]:
                             "mobile": search_mobile,
                             "amount": payment_amount,
                             "type": "payment",
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                             "staff": st.session_state.username
                         }])], ignore_index=True)
                         save_db("credit", credit_df)
@@ -469,38 +496,4 @@ with selected_tab[1]:
                     credit_amount = st.number_input("Credit Amount", min_value=0, value=0)
                     if st.form_submit_button("Add Credit") and credit_amount > 0:
                         customers_df = load_db("customers")
-                        idx = customers_df[customers_df['mobile'] == search_mobile].index[0]
-                        customers_df.at[idx, 'credit_balance'] += credit_amount
-                        save_db("customers", customers_df)
-                        
-                        credit_df = load_db("credit")
-                        credit_df = pd.concat([credit_df, pd.DataFrame([{
-                            "mobile": search_mobile,
-                            "amount": credit_amount,
-                            "type": "credit",
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "staff": st.session_state.username
-                        }])], ignore_index=True)
-                        save_db("credit", credit_df)
-                        st.success("Credit added!")
-                        st.rerun()
-        else:
-            st.warning("Customer not found")
-
-# Admin-only tabs
-if st.session_state.user_role == "Admin":
-    with selected_tab[2]:  # Inventory
-        st.header("📦 Inventory Management")
-        
-        tab1, tab2 = st.tabs(["View Inventory", "Add New Item"])
-        
-        with tab1:
-            st.subheader("Current Food Items")
-            food_df = get_food_items()
-            if not food_df.empty:
-                st.dataframe(food_df)
-                
-                # Stock management
-                st.subheader("Update Stock")
-                selected_item = st.selectbox("Select item to update", food_df['item'])
-                current_stock = int(food_df.loc[food_df['item'] == s
+     
