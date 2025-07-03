@@ -84,7 +84,7 @@ def load_db(db_name):
         df = pd.read_csv(DATABASES[db_name])
         # Convert string representations of lists to actual lists for orders
         if db_name == "orders" and 'items' in df.columns:
-            df['items'] = df['items'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) else [])
+            df['items'] = df['items'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) and x.startswith('[') else [])
         return df
     except (FileNotFoundError, pd.errors.EmptyDataError):
         return pd.DataFrame()
@@ -381,13 +381,14 @@ with selected_tab[0]:
                     
                     # Record credit transaction
                     credit_df = load_db("credit")
-                    credit_df = pd.concat([credit_df, pd.DataFrame([{
+                    new_credit = pd.DataFrame([{
                         "mobile": mobile,
                         "amount": total_amount,
                         "type": "purchase",
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "staff": st.session_state.username
-                    }])], ignore_index=True)
+                    }])
+                    credit_df = pd.concat([credit_df, new_credit], ignore_index=True)
                     save_db("credit", credit_df)
                     
                     # Save order
@@ -489,10 +490,9 @@ with selected_tab[1]:
                         save_db("customers", customers_df)
                         
                         credit_df = load_db("credit")
-                        credit_df = pd.concat([credit_df, pd.DataFrame([{
+                        new_payment = pd.DataFrame([{
                             "mobile": search_mobile,
                             "amount": payment_amount,
                             "type": "payment",
                             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "staff": st.session_state.username
-                        }])], ignore
+                            "staff": st.session_state
