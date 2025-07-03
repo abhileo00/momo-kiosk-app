@@ -112,15 +112,15 @@ if st.session_state.authenticated:
 
     selected_tab = st.tabs(tabs)
 
-    # Order Tab (Placeholder)
+    # Order Tab
     with selected_tab[0]:
         st.header("Order Placement")
-        st.success("Order placement UI will be here including cart, payment, and confirmation")
+        st.info("Order placement interface will go here.")
 
-    # Customers Tab (Placeholder)
+    # Customers Tab
     with selected_tab[1]:
         st.header("Customer Management")
-        st.success("Add/view customer, manage credit, and loyalty points")
+        st.info("Customer search, credit management and history coming soon.")
 
     # Admin Tabs
     if st.session_state.user_role == "Admin":
@@ -129,12 +129,12 @@ if st.session_state.authenticated:
             st.header("Inventory Management")
             inventory_df = load_db("inventory")
             st.dataframe(inventory_df)
-            st.info("Inventory features (add stock, alerts) will be here")
+            st.info("Inventory management features will go here.")
 
         # Reports
         with selected_tab[3]:
             st.header("Sales Reports")
-            st.info("Sales analytics and charts will be displayed here")
+            st.info("Sales analytics and performance charts will go here.")
 
         # Backup
         with selected_tab[4]:
@@ -149,25 +149,4 @@ if st.session_state.authenticated:
                 st.success(f"Backup created in folder: {backup_dir}")
 else:
     st.warning("Please log in using the sidebar to use the app.")
-
-
-Your Food Hub app code has been fully fixed and generated.
-File Ready To Use
-
-You can now copy the full code from your editor, save it as food_hub_app.py, and run it using:
-
-streamlit run food_hub_app.py
-
-If you'd like me to generate:
-
-The full order booking UI
-
-Credit system
-
-Inventory management with alerts
-
-Sales reports
-
-
-Let me know, and I’ll extend the code step by step.
-
+    
