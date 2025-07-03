@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, date
 import os
 import shutil
-import csv
 
 # ======================
 # DATA CONFIGURATION
@@ -389,24 +388,29 @@ with tab_backup:
     
     with col2:
         st.subheader("Restore Backup")
-        available_backups = sorted(
-            [d for d in os.listdir(DATA_FOLDER + "backups/") 
-            if os.path.isdir(DATA_FOLDER + "backups/" + d)
-        )
+        available_backups = []
+        if os.path.exists(DATA_FOLDER + "backups/"):
+            available_backups = sorted(
+                [d for d in os.listdir(DATA_FOLDER + "backups/") 
+                if os.path.isdir(DATA_FOLDER + "backups/" + d)]
+            )
         
-        selected_backup = st.selectbox("Available Backups", available_backups)
-        if st.button("🔄 Restore Selected Backup", use_container_width=True):
-            if restore_backup(selected_backup):
-                st.success("Backup restored successfully! Please restart the app.")
-            else:
-                st.error("Restoration failed")
+        if available_backups:
+            selected_backup = st.selectbox("Available Backups", available_backups)
+            if st.button("🔄 Restore Selected Backup", use_container_width=True):
+                if restore_backup(selected_backup):
+                    st.success("Backup restored successfully! Please restart the app.")
+                else:
+                    st.error("Restoration failed")
+        else:
+            st.warning("No backups available yet")
     
     st.subheader("Database Status")
-    st.json({
-        db_name: {
+    status_data = {}
+    for db_name, db_path in DATABASES.items():
+        status_data[db_name] = {
             "size": f"{os.path.getsize(db_path)/1024:.1f} KB" if os.path.exists(db_path) else "Missing",
             "last_modified": datetime.fromtimestamp(os.path.getmtime(db_path)).strftime('%Y-%m-%d %H:%M') 
             if os.path.exists(db_path) else "Never"
-        } 
-        for db_name, db_path in DATABASES.items()
-    })
+        }
+    st.json(status_data)
