@@ -31,7 +31,7 @@ def init_db():
     
     c.execute('''CREATE TABLE IF NOT EXISTS customers
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT UNIQUE,
+                  name TEXT,
                   phone TEXT UNIQUE,
                   credit_balance REAL DEFAULT 0,
                   total_orders INTEGER DEFAULT 0,
@@ -64,6 +64,19 @@ def init_db():
                      can_access_inventory, can_access_reports, can_access_backup) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", 
                  ("admin", hash_password("admin123"), "Admin", 1, 1, 1, 1, 1))
+    
+    # Insert some sample menu items if none exist
+    c.execute("SELECT 1 FROM menu LIMIT 1")
+    if not c.fetchone():
+        sample_items = [
+            ("Momos", "Veg Momos", 60.0, 30.0, 100),
+            ("Momos", "Chicken Momos", 80.0, 40.0, 100),
+            ("Sandwich", "Veg Sandwich", 50.0, 25.0, 50),
+            ("Sandwich", "Cheese Sandwich", 70.0, 35.0, 50),
+            ("Maggi", "Plain Maggi", 40.0, 15.0, 80),
+            ("Maggi", "Cheese Maggi", 60.0, 25.0, 80)
+        ]
+        c.executemany("INSERT INTO menu (category, item, price, cost, stock) VALUES (?, ?, ?, ?, ?)", sample_items)
     
     conn.commit()
     return conn
@@ -158,41 +171,40 @@ def order_tab():
     
     # Menu Selection
     menu_df = pd.read_sql("SELECT * FROM menu WHERE stock > 0", conn)
-    categories = menu_df['category'].unique()
     
-    if categories.size > 0:
+    if not menu_df.empty:
+        categories = menu_df['category'].unique()
         category = st.selectbox("Select Category", categories)
         items = menu_df[menu_df['category'] == category]
+        
+        for _, item in items.iterrows():
+            with st.expander(f"{item['item']} - ₹{item['price']} (Stock: {item['stock']})"):
+                qty = st.number_input(
+                    "Quantity", 
+                    min_value=0, 
+                    max_value=item['stock'],
+                    key=f"qty_{item['item']}"
+                )
+                
+                if qty > 0 and st.button(f"Add {item['item']}", key=f"add_{item['item']}"):
+                    order_item = {
+                        "item": item['item'],
+                        "price": item['price'],
+                        "quantity": qty,
+                        "total": item['price'] * qty
+                    }
+                    st.session_state.current_order.append(order_item)
+                    
+                    # Update stock
+                    conn.execute("UPDATE menu SET stock = stock - ? WHERE item = ?", 
+                               (qty, item['item']))
+                    conn.commit()
+                    
+                    st.success(f"Added {qty} × {item['item']}")
+                    time.sleep(0.5)
+                    st.rerun()
     else:
-        st.warning("No menu items available")
-        items = pd.DataFrame()
-    
-    for _, item in items.iterrows():
-        with st.expander(f"{item['item']} - ₹{item['price']} (Stock: {item['stock']})"):
-            qty = st.number_input(
-                "Quantity", 
-                min_value=0, 
-                max_value=item['stock'],
-                key=f"qty_{item['item']}"
-            )
-            
-            if qty > 0 and st.button(f"Add {item['item']}", key=f"add_{item['item']}"):
-                order_item = {
-                    "item": item['item'],
-                    "price": item['price'],
-                    "quantity": qty,
-                    "total": item['price'] * qty
-                }
-                st.session_state.current_order.append(order_item)
-                
-                # Update stock
-                conn.execute("UPDATE menu SET stock = stock - ? WHERE item = ?", 
-                           (qty, item['item']))
-                conn.commit()
-                
-                st.success(f"Added {qty} × {item['item']}")
-                time.sleep(0.5)
-                st.rerun()
+        st.warning("No menu items available or all items are out of stock")
     
     # Order Summary
     if st.session_state.current_order:
@@ -249,6 +261,40 @@ def order_tab():
             time.sleep(1)
             st.rerun()
 
+def customers_tab():
+    st.header("Customer Management")
+    
+    tab1, tab2 = st.tabs(["View Customers", "Add/Edit Customer"])
+    
+    with tab1:
+        customers = pd.read_sql("SELECT * FROM customers", conn)
+        if not customers.empty:
+            st.dataframe(customers)
+        else:
+            st.info("No customers found")
+    
+    with tab2:
+        with st.form("customer_form"):
+            name = st.text_input("Full Name")
+            phone = st.text_input("Phone Number (Required)", placeholder="10 digit phone number")
+            credit = st.number_input("Credit Balance", min_value=0.0, value=0.0)
+            
+            if st.form_submit_button("Save Customer"):
+                if not phone or len(phone) < 10:
+                    st.error("Valid phone number is required (minimum 10 digits)")
+                else:
+                    try:
+                        conn.execute("""
+                            INSERT OR REPLACE INTO customers 
+                            (name, phone, credit_balance) 
+                            VALUES (?, ?, ?)
+                        """, (name, phone, credit))
+                        conn.commit()
+                        st.success("Customer saved successfully!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Phone number already exists for another customer")
+
 def inventory_tab():
     st.header("Inventory Management")
     
@@ -274,7 +320,6 @@ def inventory_tab():
     with col2:
         st.subheader("Add New Item")
         with st.form("new_item_form"):
-            # Changed from selectbox to text_input for free-form category entry
             category = st.text_input("Category", placeholder="e.g., Momos, Sandwich, Maggi")
             item = st.text_input("Item Name")
             price = st.number_input("Price", min_value=0.0)
@@ -285,64 +330,190 @@ def inventory_tab():
                 if not category or not item:
                     st.error("Category and Item Name are required!")
                 else:
-                    conn.execute("""
-                        INSERT INTO menu 
-                        (category, item, price, cost, stock) 
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (category.strip(), item.strip(), price, cost, stock))
-                    conn.commit()
-                    st.success("Item added to menu!")
-                    st.rerun()
+                    try:
+                        conn.execute("""
+                            INSERT INTO menu 
+                            (category, item, price, cost, stock) 
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (category.strip(), item.strip(), price, cost, stock))
+                        conn.commit()
+                        st.success("Item added to menu!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Item name already exists in the menu")
 
-# ... [Rest of the code remains the same, including customers_tab, reports_tab, backup_tab, staff_management_tab] ...
+def reports_tab():
+    st.header("Sales Reports")
+    
+    orders = pd.read_sql("SELECT * FROM orders", conn)
+    
+    if orders.empty:
+        st.info("No orders found")
+        return
+    
+    orders['timestamp'] = pd.to_datetime(orders['timestamp'])
+    orders['date'] = orders['timestamp'].dt.date
+    
+    tab1, tab2, tab3 = st.tabs(["Daily Sales", "Customer Analysis", "Menu Performance"])
+    
+    with tab1:
+        st.subheader("Daily Sales")
+        daily_sales = orders.groupby('date')['total'].sum().reset_index()
+        st.bar_chart(daily_sales, x="date", y="total")
+        st.dataframe(daily_sales)
+    
+    with tab2:
+        st.subheader("Customer Analysis")
+        customer_stats = orders.groupby('customer').agg({
+            'total': 'sum',
+            'id': 'count'
+        }).rename(columns={'id': 'order_count'})
+        st.dataframe(customer_stats)
+    
+    with tab3:
+        st.subheader("Menu Performance")
+        try:
+            # Parse the items string to analyze menu performance
+            all_items = []
+            for _, row in orders.iterrows():
+                items = eval(row['items'])  # Note: Using eval is not generally safe, but works for this demo
+                for item in items:
+                    item['date'] = row['date']
+                    all_items.append(item)
+            
+            if all_items:
+                items_df = pd.DataFrame(all_items)
+                items_df['date'] = pd.to_datetime(items_df['date'])
+                
+                # Weekly sales by item
+                items_df['week'] = items_df['date'].dt.strftime('%Y-%U')
+                weekly_sales = items_df.groupby(['item', 'week'])['quantity'].sum().unstack().fillna(0)
+                
+                st.write("Weekly Sales by Item")
+                st.dataframe(weekly_sales)
+                
+                # Top selling items
+                top_items = items_df.groupby('item')['quantity'].sum().sort_values(ascending=False)
+                st.write("Top Selling Items")
+                st.dataframe(top_items)
+            else:
+                st.warning("Could not parse order items for analysis")
+        except:
+            st.warning("Error analyzing menu performance data")
+
+def backup_tab():
+    st.header("System Backup")
+    
+    if st.button("Create Backup"):
+        backup_file = f"{BACKUP_DIR}backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        shutil.copy2(DB_FILE, backup_file)
+        st.success(f"Backup created: {backup_file}")
+        st.rerun()
+    
+    st.subheader("Available Backups")
+    backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith('.db')], reverse=True)
+    
+    if backups:
+        selected = st.selectbox("Select backup", backups)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Restore Backup"):
+                shutil.copy2(f"{BACKUP_DIR}{selected}", DB_FILE)
+                st.success("Database restored! Please refresh the page.")
+        with col2:
+            if st.button("Delete Backup"):
+                os.remove(f"{BACKUP_DIR}{selected}")
+                st.success("Backup deleted!")
+                st.rerun()
+        
+        st.write(f"Selected: {selected}")
+    else:
+        st.info("No backups available")
+
+def staff_management_tab():
+    st.header("Staff Account Management")
+    
+    tab1, tab2 = st.tabs(["View Staff", "Add/Edit Staff"])
+    
+    with tab1:
+        staff_df = pd.read_sql("SELECT id, username, role FROM users", conn)
+        if not staff_df.empty:
+            st.dataframe(staff_df)
+            
+            # Delete staff option
+            staff_to_delete = st.selectbox("Select staff to delete", 
+                                        staff_df['username'].tolist(),
+                                        key="delete_staff_select")
+            
+            if st.button("Delete Staff Account", key="delete_staff_btn"):
+                if staff_to_delete == "admin":
+                    st.error("Cannot delete admin account!")
+                else:
+                    conn.execute("DELETE FROM users WHERE username = ?", (staff_to_delete,))
+                    conn.commit()
+                    st.success(f"Deleted staff account: {staff_to_delete}")
+                    st.rerun()
+        else:
+            st.info("No staff accounts found")
+    
+    with tab2:
+        with st.form("staff_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            role = st.selectbox("Role", ["Staff", "Manager"])
+            
+            st.subheader("Page Access Permissions")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                can_access_orders = st.checkbox("Orders", value=True)
+                can_access_customers = st.checkbox("Customers", value=True)
+                can_access_inventory = st.checkbox("Inventory", value=False)
+            
+            with col2:
+                can_access_reports = st.checkbox("Reports", value=False)
+                can_access_backup = st.checkbox("Backup", value=False)
+            
+            if st.form_submit_button("Save Staff Account"):
+                # Check if username exists
+                c = conn.cursor()
+                c.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+                exists = c.fetchone()
+                
+                if exists and username == "admin":
+                    st.error("Cannot modify admin account!")
+                else:
+                    hashed_pw = hash_password(password)
+                    
+                    if exists:
+                        # Update existing user
+                        conn.execute("""
+                            UPDATE users SET 
+                            password = ?,
+                            role = ?,
+                            can_access_orders = ?,
+                            can_access_customers = ?,
+                            can_access_inventory = ?,
+                            can_access_reports = ?,
+                            can_access_backup = ?
+                            WHERE username = ?
+                        """, (hashed_pw, role, can_access_orders, can_access_customers,
+                              can_access_inventory, can_access_reports, can_access_backup, username))
+                    else:
+                        # Create new user
+                        conn.execute("""
+                            INSERT INTO users 
+                            (username, password, role, can_access_orders, can_access_customers,
+                             can_access_inventory, can_access_reports, can_access_backup)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (username, hashed_pw, role, can_access_orders, can_access_customers,
+                              can_access_inventory, can_access_reports, can_access_backup))
+                    
+                    conn.commit()
+                    st.success("Staff account saved successfully!")
+                    st.rerun()
 
 # ======================
 # MAIN APP LAYOUT
-# ======================
-
-st.title("Food Order Pro")
-st.markdown(f"Logged in as: **{st.session_state.current_user}** ({st.session_state.user_role})")
-
-# Create tabs based on user permissions
-tabs_to_show = []
-tab_functions = []
-
-if st.session_state.user_permissions["orders"]:
-    tabs_to_show.append("Orders")
-    tab_functions.append(order_tab)
-
-if st.session_state.user_permissions["customers"]:
-    tabs_to_show.append("Customers")
-    tab_functions.append(customers_tab)
-
-if st.session_state.user_permissions["inventory"]:
-    tabs_to_show.append("Inventory")
-    tab_functions.append(inventory_tab)
-
-if st.session_state.user_permissions["reports"]:
-    tabs_to_show.append("Reports")
-    tab_functions.append(reports_tab)
-
-if st.session_state.user_permissions["backup"]:
-    tabs_to_show.append("Backup")
-    tab_functions.append(backup_tab)
-
-# Add Staff Management tab for Admin
-if st.session_state.user_role == "Admin":
-    tabs_to_show.append("Staff Management")
-    tab_functions.append(staff_management_tab)
-
-# Create the tabs
-tabs = st.tabs(tabs_to_show)
-
-# Display the appropriate content for each tab
-for i, tab in enumerate(tabs):
-    with tab:
-        tab_functions[i]()
-
-# Logout button
-if st.sidebar.button("Logout"):
-    st.session_state.current_user = None
-    st.session_state.user_role = None
-    st.session_state.user_permissions = None
-    st.rerun()
+# ======
