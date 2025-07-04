@@ -14,28 +14,43 @@ ORDERS_CSV = os.path.join(DATA_DIR, "orders.csv")
 CUSTOMERS_CSV = os.path.join(DATA_DIR, "customers.csv")
 MENU_CSV = os.path.join(DATA_DIR, "menu.csv")
 
+def initialize_data_files():
+    """Initialize all data files with empty DataFrames if they don't exist"""
+    if not os.path.exists(USERS_CSV):
+        pd.DataFrame(columns=['username', 'password', 'role', 'access_pages']).to_csv(USERS_CSV, index=False)
+    if not os.path.exists(ORDERS_CSV):
+        pd.DataFrame(columns=['timestamp', 'customer', 'items', 'total', 'payment_mode', 'staff']).to_csv(ORDERS_CSV, index=False)
+    if not os.path.exists(CUSTOMERS_CSV):
+        pd.DataFrame(columns=['name', 'phone', 'email', 'join_date']).to_csv(CUSTOMERS_CSV, index=False)
+    if not os.path.exists(MENU_CSV):
+        pd.DataFrame(columns=['category', 'item', 'price', 'cost', 'stock']).to_csv(MENU_CSV, index=False)
+
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-def load_csv(file, default_df):
-    if os.path.exists(file):
-        return pd.read_csv(file)
-    else:
-        default_df.to_csv(file, index=False)
-        return default_df
+def load_csv(file, default_columns):
+    """Safe CSV loading that handles empty files"""
+    try:
+        if os.path.exists(file) and os.path.getsize(file) > 0:
+            return pd.read_csv(file)
+        return pd.DataFrame(columns=default_columns)
+    except Exception:
+        return pd.DataFrame(columns=default_columns)
 
 def save_csv(df, file):
     df.to_csv(file, index=False)
 
 def authenticate(username, password):
-    users_df = load_csv(USERS_CSV, pd.DataFrame(columns=['username', 'password', 'role', 'access_pages']))
+    users_df = load_csv(USERS_CSV, ['username', 'password', 'role', 'access_pages'])
     user = users_df[users_df['username'] == username]
     if not user.empty and user.iloc[0]['password'] == hash_password(password):
         return user.iloc[0]['role'], user.iloc[0]['access_pages'].split(',')
     return None, None
 
-# Initialize default admin if not exists
-if not os.path.exists(USERS_CSV):
+# Initialize data files and default admin
+initialize_data_files()
+users_df = load_csv(USERS_CSV, ['username', 'password', 'role', 'access_pages'])
+if users_df.empty:
     save_csv(pd.DataFrame([{
         'username': 'admin',
         'password': hash_password('admin123'),
@@ -70,10 +85,10 @@ if not st.session_state.current_user:
                 st.error("Invalid credentials")
     st.stop()
 
-# All Application Pages
+# All Application Pages with proper empty state handling
 def orders_page():
     st.header("Orders Management")
-    menu_df = load_csv(MENU_CSV, pd.DataFrame(columns=["category", "item", "price", "cost", "stock"]))
+    menu_df = load_csv(MENU_CSV, ['category', 'item', 'price', 'cost', 'stock'])
     
     if menu_df.empty:
         st.warning("No items in menu. Please add items to inventory first.")
@@ -122,7 +137,7 @@ def orders_page():
             return
         
         if st.button("Submit Order", type="primary"):
-            orders_df = load_csv(ORDERS_CSV, pd.DataFrame())
+            orders_df = load_csv(ORDERS_CSV, ['timestamp', 'customer', 'items', 'total', 'payment_mode', 'staff'])
             new_order = pd.DataFrame([{
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'customer': customer.strip() if customer.strip() else 'Guest',
@@ -148,8 +163,7 @@ def orders_page():
 
 def customers_page():
     st.header("Customers Management")
-    customers_df = load_csv(CUSTOMERS_CSV, pd.DataFrame(columns=["name", "phone", "email", "join_date"]))
-    orders_df = load_csv(ORDERS_CSV, pd.DataFrame())
+    customers_df = load_csv(CUSTOMERS_CSV, ['name', 'phone', 'email', 'join_date'])
     
     st.subheader("Customer Database")
     st.dataframe(customers_df)
@@ -178,7 +192,7 @@ def customers_page():
 
 def inventory_page():
     st.header("Inventory Management")
-    menu_df = load_csv(MENU_CSV, pd.DataFrame(columns=["category", "item", "price", "cost", "stock"]))
+    menu_df = load_csv(MENU_CSV, ['category', 'item', 'price', 'cost', 'stock'])
     
     st.subheader("Current Menu")
     st.dataframe(menu_df)
@@ -214,37 +228,43 @@ def inventory_page():
 
 def reports_page():
     st.header("Sales Reports")
-    if not os.path.exists(ORDERS_CSV):
-        st.info("No orders yet.")
+    orders_df = load_csv(ORDERS_CSV, ['timestamp', 'customer', 'items', 'total', 'payment_mode', 'staff'])
+    
+    if orders_df.empty:
+        st.info("No orders yet. Place some orders to see reports.")
         return
 
-    df = pd.read_csv(ORDERS_CSV)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df['date'] = df['timestamp'].dt.date
-    df['week'] = df['timestamp'].dt.strftime('%Y-%U')
-    df['month'] = df['timestamp'].dt.strftime('%Y-%m')
-    df['items'] = df['items'].apply(ast.literal_eval)
+    orders_df['timestamp'] = pd.to_datetime(orders_df['timestamp'])
+    orders_df['date'] = orders_df['timestamp'].dt.date
+    orders_df['week'] = orders_df['timestamp'].dt.strftime('%Y-%U')
+    orders_df['month'] = orders_df['timestamp'].dt.strftime('%Y-%m')
+    
+    try:
+        orders_df['items'] = orders_df['items'].apply(ast.literal_eval)
+    except:
+        st.error("Could not parse order items")
+        return
 
     tab1, tab2, tab3 = st.tabs(["Daily", "Weekly", "Monthly"])
     
     with tab1:
         st.subheader("Daily Sales")
-        daily = df.groupby('date').agg({'total': 'sum'}).reset_index()
+        daily = orders_df.groupby('date').agg({'total': 'sum'}).reset_index()
         st.dataframe(daily)
         
     with tab2:
         st.subheader("Weekly Sales")
-        weekly = df.groupby('week').agg({'total': 'sum'}).reset_index()
+        weekly = orders_df.groupby('week').agg({'total': 'sum'}).reset_index()
         st.dataframe(weekly)
     
     with tab3:
         st.subheader("Monthly Sales")
-        monthly = df.groupby('month').agg({'total': 'sum'}).reset_index()
+        monthly = orders_df.groupby('month').agg({'total': 'sum'}).reset_index()
         st.dataframe(monthly)
 
 def manage_users_page():
     st.header("User Management")
-    users_df = load_csv(USERS_CSV, pd.DataFrame(columns=['username', 'password', 'role', 'access_pages']))
+    users_df = load_csv(USERS_CSV, ['username', 'password', 'role', 'access_pages'])
     
     st.subheader("Current Users")
     st.dataframe(users_df[['username', 'role']])
